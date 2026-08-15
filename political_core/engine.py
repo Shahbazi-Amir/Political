@@ -5,10 +5,23 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+from .analysis import analyze_argument, analyze_framing
 from .cache import SQLiteCache
 from .claims import analyze_claims, plan_queries
 from .confidence import apply_guardrails
-from .models import Budget, Claim, Evidence, EvidenceStance, FactCheckResult, ReasoningDecision, SearchResult, SourceKind, SourceRole, TimelineEvent, Verdict
+from .models import (
+    Budget,
+    Claim,
+    Evidence,
+    EvidenceStance,
+    FactCheckResult,
+    ReasoningDecision,
+    SearchResult,
+    SourceKind,
+    SourceRole,
+    TimelineEvent,
+    Verdict,
+)
 from .provenance import assign_source_chains, independent_source_count
 from .providers import Fetcher, ReasoningProvider, SearchProvider
 from .source_policy import SourcePolicy
@@ -16,7 +29,17 @@ from .text import canonical_url, domain_of, fingerprint, lexical_relevance, norm
 
 
 class FactCheckEngine:
-    def __init__(self, search: SearchProvider, reasoner: ReasoningProvider, *, fetcher: Fetcher | None = None, cache: SQLiteCache | None = None, source_policy: SourcePolicy | None = None, quick_budget: Budget | None = None, deep_budget: Budget | None = None) -> None:
+    def __init__(
+        self,
+        search: SearchProvider,
+        reasoner: ReasoningProvider,
+        *,
+        fetcher: Fetcher | None = None,
+        cache: SQLiteCache | None = None,
+        source_policy: SourcePolicy | None = None,
+        quick_budget: Budget | None = None,
+        deep_budget: Budget | None = None,
+    ) -> None:
         self.search = search
         self.reasoner = reasoner
         self.fetcher = fetcher
@@ -60,14 +83,24 @@ class FactCheckEngine:
             "negative_claim": any(c.is_negative for c in atomic_claims),
             "breaking_news": any(c.breaking_news for c in atomic_claims),
             "current_status": any(c.current_status for c in atomic_claims),
+            "search_provider_stats": getattr(self.search, "stats", {}),
         }
 
         if not evidence:
             result = FactCheckResult(
-                claim=claim, normalized_claim=normalized, verdict=Verdict.UNVERIFIED, confidence=0.05,
-                summary="شواهد قابل اتکای کافی برای ارزیابی این ادعا پیدا نشد.", key_points=[],
-                uncertainty="جست‌وجو یا بازیابی منبع کافی نبود؛ نتیجه‌گیری قطعی مجاز نیست.", evidence=[], citation_ids=[], atomic_claims=atomic_claims,
-                evidence_strength="low", missing_evidence=self._required_missing(atomic_claims, []), diagnostics=diagnostics,
+                claim=claim,
+                normalized_claim=normalized,
+                verdict=Verdict.UNVERIFIED,
+                confidence=0.05,
+                summary="شواهد قابل اتکای کافی برای ارزیابی این ادعا پیدا نشد.",
+                key_points=[],
+                uncertainty="جست‌وجو یا بازیابی منبع کافی نبود؛ نتیجه‌گیری قطعی مجاز نیست.",
+                evidence=[],
+                citation_ids=[],
+                atomic_claims=atomic_claims,
+                evidence_strength="low",
+                missing_evidence=self._required_missing(atomic_claims, []),
+                diagnostics=diagnostics,
                 cost_stats=self._cost_stats(started, len(planned), 0, 0, {}),
             )
             self._save(cache_key, result)
@@ -88,11 +121,24 @@ class FactCheckEngine:
             "deep_check_recommended": self._recommend_deep(mode, atomic_claims, decision, profile.independent_sources, profile.primary_count),
         })
         result = FactCheckResult(
-            claim=claim, normalized_claim=normalized, verdict=decision.verdict, confidence=round(decision.confidence, 3), summary=decision.summary,
-            key_points=decision.key_points, uncertainty=decision.uncertainty, evidence=evidence, citation_ids=decision.citation_ids,
-            atomic_claims=atomic_claims, evidence_strength=profile.strength, supporting_evidence_ids=supporting,
-            contradicting_evidence_ids=contradicting, missing_evidence=missing, timeline=timeline, diagnostics=diagnostics,
+            claim=claim,
+            normalized_claim=normalized,
+            verdict=decision.verdict,
+            confidence=round(decision.confidence, 3),
+            summary=decision.summary,
+            key_points=decision.key_points,
+            uncertainty=decision.uncertainty,
+            evidence=evidence,
+            citation_ids=decision.citation_ids,
+            atomic_claims=atomic_claims,
+            evidence_strength=profile.strength,
+            supporting_evidence_ids=supporting,
+            contradicting_evidence_ids=contradicting,
+            missing_evidence=missing,
+            timeline=timeline,
+            diagnostics=diagnostics,
             cost_stats=self._cost_stats(started, len(planned), min(len(candidates), budget.max_fetches) if self.fetcher else 0, 1, decision.usage),
+            analysis={"argument": analyze_argument(normalized), "framing": analyze_framing(normalized), "fetch_provider_stats": getattr(self.fetcher, "stats", {}) if self.fetcher else {}},
         )
         self._save(cache_key, result)
         return result
@@ -150,10 +196,23 @@ class FactCheckEngine:
             except ValueError:
                 continue
             provisional.append(Evidence(
-                evidence_id="", url=result.url, canonical_url=canon, title=result.title, domain=domain_of(result.url), publisher=result.publisher,
-                excerpt=excerpt[:budget.max_page_chars], published_at=result.published_at, updated_at=result.updated_at, source_kind=kind,
-                source_role=role, quality_score=score, relevance_score=relevance, independence_key=self.source_policy.independence_key(result.url),
+                evidence_id="",
+                url=result.url,
+                canonical_url=canon,
+                title=result.title,
+                domain=domain_of(result.url),
+                publisher=result.publisher,
+                excerpt=excerpt[:budget.max_page_chars],
+                published_at=result.published_at,
+                updated_at=result.updated_at,
+                source_kind=kind,
+                source_role=role,
+                quality_score=score,
+                relevance_score=relevance,
+                independence_key=self.source_policy.independence_key(result.url),
                 cited_source=self.source_policy.cited_source_hint(result),
+                correction_status="corrected" if any(x in excerpt.casefold() for x in ("اصلاحیه", "تصحیح", "correction")) else None,
+                retraction_status="retracted" if any(x in excerpt.casefold() for x in ("پس گرفته شد", "حذف شد", "retracted", "withdrawn")) else None,
             ))
 
         provisional = assign_source_chains(provisional)
@@ -211,7 +270,8 @@ class FactCheckEngine:
                     event_type = label
                     break
             if event_type and (e.published_at or e.event_date):
-                events.append(TimelineEvent(entity="", role="", event_type=event_type, start_date=e.event_date or e.published_at, evidence_ids=[e.evidence_id], confidence=min(0.95, e.quality_score)))
+                events.append(TimelineEvent(entity="", role="", event_type=event_type, start_date=e.event_date or e.published_at,
+                                            evidence_ids=[e.evidence_id], confidence=min(0.95, e.quality_score)))
         events.sort(key=lambda x: x.start_date or "")
         return events[:20]
 
@@ -224,7 +284,16 @@ class FactCheckEngine:
     @staticmethod
     def _cost_stats(started: datetime, queries: int, fetches: int, reasoning_calls: int, usage: dict[str, Any]) -> dict[str, Any]:
         duration = (datetime.now(timezone.utc) - started).total_seconds()
-        return {"search_queries": queries, "pages_fetched": fetches, "reasoning_calls": reasoning_calls, "input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"), "total_tokens": usage.get("total_tokens"), "estimated_cost": usage.get("estimated_cost"), "duration_seconds": round(duration, 3)}
+        return {
+            "search_queries": queries,
+            "pages_fetched": fetches,
+            "reasoning_calls": reasoning_calls,
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+            "estimated_cost": usage.get("estimated_cost"),
+            "duration_seconds": round(duration, 3),
+        }
 
     def _save(self, key: str, result: FactCheckResult) -> None:
         if self.cache:
@@ -236,14 +305,29 @@ class FactCheckEngine:
         evidence = []
         for item in data.get("evidence", []):
             evidence.append(Evidence(
-                evidence_id=item["evidence_id"], url=item["url"], canonical_url=item.get("canonical_url", item["url"]), title=item["title"], domain=item["domain"], publisher=item.get("publisher"), excerpt=item["excerpt"], published_at=item.get("published_at"), updated_at=item.get("updated_at"), event_date=item.get("event_date"), retrieved_at=item.get("retrieved_at", ""), source_kind=SourceKind(item["source_kind"]), source_role=SourceRole(item.get("source_role", "unknown")), quality_score=float(item["quality_score"]), relevance_score=float(item.get("relevance_score", 0)), independence_key=item["independence_key"], source_chain_id=item.get("source_chain_id", ""), cited_source=item.get("cited_source"), stance=EvidenceStance(item.get("stance", "unclear")), correction_status=item.get("correction_status"), retraction_status=item.get("retraction_status"),
+                evidence_id=item["evidence_id"], url=item["url"], canonical_url=item.get("canonical_url", item["url"]), title=item["title"],
+                domain=item["domain"], publisher=item.get("publisher"), excerpt=item["excerpt"], published_at=item.get("published_at"),
+                updated_at=item.get("updated_at"), event_date=item.get("event_date"), retrieved_at=item.get("retrieved_at", ""),
+                source_kind=SourceKind(item["source_kind"]), source_role=SourceRole(item.get("source_role", "unknown")),
+                quality_score=float(item["quality_score"]), relevance_score=float(item.get("relevance_score", 0)),
+                independence_key=item["independence_key"], source_chain_id=item.get("source_chain_id", ""), cited_source=item.get("cited_source"),
+                stance=EvidenceStance(item.get("stance", "unclear")), correction_status=item.get("correction_status"), retraction_status=item.get("retraction_status"),
             ))
         claims = []
         for item in data.get("atomic_claims", []):
             claims.append(Claim(
-                claim_id=item["claim_id"], original_text=item["original_text"], normalized_text=item["normalized_text"], atomic_text=item["atomic_text"], claim_type=ClaimType(item.get("claim_type", "unknown")), intent=Intent(item.get("intent", "fact_check")), entities=list(item.get("entities", [])), dates=list(item.get("dates", [])), dependencies=list(item.get("dependencies", [])), required_evidence=list(item.get("required_evidence", [])), is_negative=bool(item.get("is_negative")), high_impact=bool(item.get("high_impact")), current_status=bool(item.get("current_status")), breaking_news=bool(item.get("breaking_news")),
+                claim_id=item["claim_id"], original_text=item["original_text"], normalized_text=item["normalized_text"], atomic_text=item["atomic_text"],
+                claim_type=ClaimType(item.get("claim_type", "unknown")), intent=Intent(item.get("intent", "fact_check")), entities=list(item.get("entities", [])),
+                dates=list(item.get("dates", [])), dependencies=list(item.get("dependencies", [])), required_evidence=list(item.get("required_evidence", [])),
+                is_negative=bool(item.get("is_negative")), high_impact=bool(item.get("high_impact")), current_status=bool(item.get("current_status")),
+                breaking_news=bool(item.get("breaking_news")), quoted_texts=list(item.get("quoted_texts", [])),
             ))
         timeline = [TimelineEvent(**x) for x in data.get("timeline", [])]
         return FactCheckResult(
-            claim=data["claim"], normalized_claim=data["normalized_claim"], verdict=Verdict(data["verdict"]), confidence=float(data["confidence"]), summary=data["summary"], key_points=list(data.get("key_points", [])), uncertainty=data.get("uncertainty", ""), evidence=evidence, citation_ids=list(data.get("citation_ids", [])), atomic_claims=claims, evidence_strength=data.get("evidence_strength", "low"), supporting_evidence_ids=list(data.get("supporting_evidence_ids", [])), contradicting_evidence_ids=list(data.get("contradicting_evidence_ids", [])), missing_evidence=list(data.get("missing_evidence", [])), timeline=timeline, from_cache=True, diagnostics=dict(data.get("diagnostics", {})), cost_stats=dict(data.get("cost_stats", {})),
+            claim=data["claim"], normalized_claim=data["normalized_claim"], verdict=Verdict(data["verdict"]), confidence=float(data["confidence"]),
+            summary=data["summary"], key_points=list(data.get("key_points", [])), uncertainty=data.get("uncertainty", ""), evidence=evidence,
+            citation_ids=list(data.get("citation_ids", [])), atomic_claims=claims, evidence_strength=data.get("evidence_strength", "low"),
+            supporting_evidence_ids=list(data.get("supporting_evidence_ids", [])), contradicting_evidence_ids=list(data.get("contradicting_evidence_ids", [])),
+            missing_evidence=list(data.get("missing_evidence", [])), timeline=timeline, from_cache=True,
+            diagnostics=dict(data.get("diagnostics", {})), cost_stats=dict(data.get("cost_stats", {})), analysis=dict(data.get("analysis", {})),
         )

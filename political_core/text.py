@@ -12,7 +12,10 @@ _TRANSLATION = str.maketrans({
 _ZERO_WIDTH = re.compile(r"[\u200b\u200c\u200d\ufeff]")
 _DIACRITICS = re.compile(r"[\u064b-\u065f\u0670]")
 _WS = re.compile(r"\s+")
-_TRACKING_KEYS = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id", "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "source", "campaign"}
+_TRACKING_KEYS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id",
+    "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "source", "campaign",
+}
 
 
 def normalize_text(text: str) -> str:
@@ -64,6 +67,7 @@ def lexical_relevance(claim: str, text: str) -> float:
 
 
 def build_queries(claim: str, limit: int) -> list[str]:
+    # Backward-compatible wrapper. Rich planning lives in claims.plan_queries.
     claim = normalize_text(claim)
     if not claim:
         return []
@@ -76,3 +80,14 @@ def build_queries(claim: str, limit: int) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+_FA_LATIN = {"ا":"a","آ":"a","ب":"b","پ":"p","ت":"t","ث":"s","ج":"j","چ":"ch","ح":"h","خ":"kh","د":"d","ذ":"z","ر":"r","ز":"z","ژ":"zh","س":"s","ش":"sh","ص":"s","ض":"z","ط":"t","ظ":"z","ع":"a","غ":"gh","ف":"f","ق":"gh","ک":"k","گ":"g","ل":"l","م":"m","ن":"n","و":"v","ه":"h","ی":"y","ء":""}
+
+def transliterate_fa(text: str) -> str:
+    text = normalize_text(text)
+    out = []
+    for ch in text:
+        if ch == " ": out.append(" ")
+        else: out.append(_FA_LATIN.get(ch, ch if ch.isascii() else ""))
+    return re.sub(r"\s+", " ", "".join(out)).strip()

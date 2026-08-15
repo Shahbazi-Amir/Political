@@ -151,6 +151,7 @@ class Claim:
     high_impact: bool = False
     current_status: bool = False
     breaking_news: bool = False
+    quoted_texts: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -242,6 +243,7 @@ class FactCheckResult:
     from_cache: bool = False
     diagnostics: dict[str, Any] = field(default_factory=dict)
     cost_stats: dict[str, Any] = field(default_factory=dict)
+    analysis: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

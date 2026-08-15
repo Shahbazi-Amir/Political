@@ -69,31 +69,51 @@ def apply_guardrails(decision: ReasoningDecision, evidence: Sequence[Evidence], 
     profile = profile_evidence(annotated, set(citations), claims)
 
     if not citations:
-        return replace(decision, verdict=Verdict.UNVERIFIED, confidence=min(confidence, 0.25), citation_ids=[], evidence_stances=stances, uncertainty=(decision.uncertainty + " نتیجه بدون استناد معتبر بود و تأییدنشده تلقی شد.").strip()), profile
+        return replace(decision, verdict=Verdict.UNVERIFIED, confidence=min(confidence, 0.25), citation_ids=[], evidence_stances=stances,
+                       uncertainty=(decision.uncertainty + " نتیجه بدون استناد معتبر بود و تأییدنشده تلقی شد.").strip()), profile
+
     cited_count = len(citations)
     if cited_count == 1 and profile.weak_count == 1:
         confidence = min(confidence, 0.35)
     elif profile.independent_sources <= 1 and profile.primary_count == 0:
         confidence = min(confidence, 0.62)
+
     if cited_count > 1 and profile.independent_sources <= 1 and profile.primary_count == 0:
         confidence = min(confidence, 0.58)
+
     conflict = decision.conflict_detected or profile.contradiction_count > 0
     if conflict:
         confidence = min(confidence, 0.65)
         if profile.support_count and profile.contradiction_count and verdict in {Verdict.TRUE, Verdict.FALSE}:
             verdict = Verdict.CONFLICTING_EVIDENCE
+
     if any(c.breaking_news for c in claims) and profile.primary_count == 0:
         confidence = min(confidence, 0.60)
+
     if any(c.high_impact for c in claims) and profile.primary_count == 0 and profile.independent_sources < 2:
         confidence = min(confidence, 0.55)
+
+    quoted = [q for c in claims for q in c.quoted_texts]
+    if quoted:
+        cited = [e for e in annotated if e.evidence_id in citations]
+        from .text import normalize_text
+        exact_quote_found = any(any(normalize_text(q) in normalize_text(e.excerpt) for q in quoted) for e in cited)
+        if not exact_quote_found:
+            confidence = min(confidence, 0.45)
+            if verdict == Verdict.TRUE:
+                verdict = Verdict.UNVERIFIED
+
     if any(c.is_negative for c in claims) and profile.primary_count == 0:
         confidence = min(confidence, 0.58)
         if verdict == Verdict.TRUE:
             verdict = Verdict.UNVERIFIED
+
     if profile.stale_current_evidence:
         confidence = min(confidence, 0.55)
         if verdict == Verdict.TRUE:
             verdict = Verdict.OUTDATED
+
     if confidence > 0.95 and profile.primary_count == 0:
         confidence = 0.95
+
     return replace(decision, verdict=verdict, confidence=confidence, citation_ids=citations, evidence_stances=stances), profile

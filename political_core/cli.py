@@ -6,6 +6,7 @@ import os
 import sys
 
 from .cache import SQLiteCache
+from .cached_providers import CachedFetcher, CachedSearchProvider
 from .config import Settings
 from .engine import FactCheckEngine
 from .evals import evaluate_jsonl
@@ -25,7 +26,13 @@ def _engine() -> FactCheckEngine:
     if not model:
         raise RuntimeError("OPENAI_MODEL is required; choose the model explicitly instead of relying on a stale hard-coded default")
     settings = Settings()
-    return FactCheckEngine(SearxNGSearchProvider(searx), OpenAIReasoningProvider(model), fetcher=SafeHttpFetcher(settings.fetch_timeout, settings.max_response_bytes), cache=SQLiteCache(settings.cache_path), quick_budget=settings.quick_budget(), deep_budget=settings.deep_budget())
+    cache = SQLiteCache(settings.cache_path)
+    search = CachedSearchProvider(SearxNGSearchProvider(searx), cache)
+    fetcher = CachedFetcher(SafeHttpFetcher(settings.fetch_timeout, settings.max_response_bytes), cache)
+    return FactCheckEngine(
+        search, OpenAIReasoningProvider(model), fetcher=fetcher, cache=cache,
+        quick_budget=settings.quick_budget(), deep_budget=settings.deep_budget(),
+    )
 
 
 def main(argv=None) -> int:

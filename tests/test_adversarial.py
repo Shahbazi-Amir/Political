@@ -6,18 +6,26 @@ from unittest.mock import patch
 
 from political_core.engine import FactCheckEngine
 from political_core.fetch import validate_public_url
-from political_core.models import Evidence, EvidenceStance, ReasoningDecision, SearchResult, SourceKind, SourceRole, Verdict
+from political_core.models import EvidenceStance, ReasoningDecision, SearchResult, SourceKind, Verdict
 from political_core.provenance import assign_source_chains, independent_source_count
+from political_core.models import Evidence, SourceRole
+
 
 class FakeSearch:
     def __init__(self, results): self.results = results
     def search(self, query, limit): return self.results[:limit]
+
 class FakeReasoner:
     def __init__(self, decision): self.decision = decision
     def evaluate(self, claim, evidence): return self.decision
 
+
 def ev(i, domain, text, cited=None):
-    return Evidence(evidence_id=f"E{i}", url=f"https://{domain}/{i}", canonical_url=f"https://{domain}/{i}", title=text, domain=domain, excerpt=text * 5, published_at=None, source_kind=SourceKind.NEWSROOM, source_role=SourceRole.SECONDARY_REPORTING, quality_score=.7, relevance_score=.5, independence_key=domain, cited_source=cited)
+    return Evidence(evidence_id=f"E{i}", url=f"https://{domain}/{i}", canonical_url=f"https://{domain}/{i}", title=text,
+                    domain=domain, excerpt=text * 5, published_at=None, source_kind=SourceKind.NEWSROOM,
+                    source_role=SourceRole.SECONDARY_REPORTING, quality_score=.7, relevance_score=.5,
+                    independence_key=domain, cited_source=cited)
+
 
 class AdversarialTests(unittest.TestCase):
     def test_cross_domain_copies_are_one_source_chain(self):
@@ -48,8 +56,12 @@ class AdversarialTests(unittest.TestCase):
         self.assertTrue(result.diagnostics["deep_check_recommended"])
 
     def test_conflicting_evidence_blocks_binary_certainty(self):
-        results = [SearchResult("https://a.example/one", "A", "supports event", source_kind=SourceKind.NEWSROOM), SearchResult("https://b.example/two", "B", "denies event", source_kind=SourceKind.NEWSROOM)]
-        reasoner = FakeReasoner(ReasoningDecision(verdict=Verdict.TRUE, confidence=.92, summary="conflict", citation_ids=["E1", "E2"], conflict_detected=True, evidence_stances={"E1": EvidenceStance.SUPPORTS, "E2": EvidenceStance.CONTRADICTS}))
+        results = [
+            SearchResult("https://a.example/one", "A", "supports event", source_kind=SourceKind.NEWSROOM),
+            SearchResult("https://b.example/two", "B", "denies event", source_kind=SourceKind.NEWSROOM),
+        ]
+        reasoner = FakeReasoner(ReasoningDecision(verdict=Verdict.TRUE, confidence=.92, summary="conflict", citation_ids=["E1", "E2"], conflict_detected=True,
+                                                  evidence_stances={"E1": EvidenceStance.SUPPORTS, "E2": EvidenceStance.CONTRADICTS}))
         result = FactCheckEngine(FakeSearch(results), reasoner).check("ادعا")
         self.assertEqual(result.verdict, Verdict.CONFLICTING_EVIDENCE)
         self.assertLessEqual(result.confidence, .65)
@@ -57,6 +69,17 @@ class AdversarialTests(unittest.TestCase):
     @patch("political_core.fetch.socket.getaddrinfo")
     def test_ssrf_localhost_is_rejected(self, mocked):
         mocked.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))]
-        with self.assertRaises(ValueError): validate_public_url("http://example.test/x")
+        with self.assertRaises(ValueError):
+            validate_public_url("http://example.test/x")
+
+
+class QuoteSafetyTests(unittest.TestCase):
+    def test_exact_quote_claim_without_exact_quote_is_capped_and_unverified(self):
+        results = [SearchResult('https://news.example/q', 'گزارش', 'این منبع فقط خلاصه‌ای از سخنان را آورده است', source_kind=SourceKind.NEWSROOM)]
+        reasoner = FakeReasoner(ReasoningDecision(verdict=Verdict.TRUE, confidence=.92, summary='quote', citation_ids=['E1'], evidence_stances={'E1': EvidenceStance.SUPPORTS}))
+        result = FactCheckEngine(FakeSearch(results), reasoner).check('او دقیقاً گفت «این جمله دقیق من است»')
+        self.assertEqual(result.verdict, Verdict.UNVERIFIED)
+        self.assertLessEqual(result.confidence, .45)
+
 
 if __name__ == "__main__": unittest.main()

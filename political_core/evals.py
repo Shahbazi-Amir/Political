@@ -10,7 +10,13 @@ def evaluate_records(records: Iterable[dict]) -> dict[str, float | int | None]:
     rows = list(records)
     if not rows:
         return {"cases": 0, "verdict_accuracy": None, "high_confidence_accuracy": None, "false_high_confidence_rate": None, "citation_validity": None}
-    verdict_correct = high = high_correct = false_high = citation_checks = citation_valid = 0
+    verdict_correct = 0
+    high = 0
+    high_correct = 0
+    false_high = 0
+    citation_checks = 0
+    citation_valid = 0
+    query_total = fetch_total = reasoning_total = 0
     for row in rows:
         expected = row.get("expected_verdict")
         actual = row.get("actual_verdict")
@@ -23,17 +29,24 @@ def evaluate_records(records: Iterable[dict]) -> dict[str, float | int | None]:
                 high_correct += 1
             else:
                 false_high += 1
+        query_total += int(row.get("search_queries", 0) or 0)
+        fetch_total += int(row.get("pages_fetched", 0) or 0)
+        reasoning_total += int(row.get("reasoning_calls", 0) or 0)
         available = set(row.get("available_evidence_ids", []))
         for cid in row.get("citation_ids", []):
             citation_checks += 1
             if cid in available:
                 citation_valid += 1
     return {
-        "cases": len(rows), "verdict_accuracy": verdict_correct / len(rows),
+        "cases": len(rows),
+        "verdict_accuracy": verdict_correct / len(rows),
         "high_confidence_accuracy": (high_correct / high) if high else None,
         "false_high_confidence_rate": (false_high / high) if high else 0.0,
         "citation_validity": (citation_valid / citation_checks) if citation_checks else 1.0,
         "verdict_distribution": dict(Counter(row.get("actual_verdict") for row in rows)),
+        "average_search_queries": query_total / len(rows),
+        "average_fetches": fetch_total / len(rows),
+        "average_reasoning_calls": reasoning_total / len(rows),
     }
 
 

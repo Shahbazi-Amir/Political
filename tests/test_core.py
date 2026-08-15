@@ -13,12 +13,22 @@ from political_core.text import canonical_url, fingerprint, normalize_text
 
 
 class FakeSearch:
-    def __init__(self, results): self.results = results; self.calls = 0
-    def search(self, query, limit): self.calls += 1; return self.results[:limit]
+    def __init__(self, results):
+        self.results = results
+        self.calls = 0
+    def search(self, query, limit):
+        self.calls += 1
+        return self.results[:limit]
+
 
 class FakeReasoner:
-    def __init__(self, decision): self.decision = decision; self.calls = 0
-    def evaluate(self, claim, evidence): self.calls += 1; return self.decision
+    def __init__(self, decision):
+        self.decision = decision
+        self.calls = 0
+    def evaluate(self, claim, evidence):
+        self.calls += 1
+        return self.decision
+
 
 class FakeFetcher:
     def fetch_text(self, url, max_chars, relevance_terms=None):
@@ -73,12 +83,30 @@ class CoreTests(unittest.TestCase):
             search = FakeSearch([SearchResult("https://a.example/law/x", "متن حکم", "evidence", source_kind=SourceKind.PRIMARY_DOCUMENT)])
             reasoner = FakeReasoner(ReasoningDecision(verdict=Verdict.TRUE, confidence=0.8, summary="ok", citation_ids=["E1"]))
             engine = FactCheckEngine(search, reasoner, cache=cache)
-            first = engine.check("خبر"); second = engine.check("خبر")
-            self.assertFalse(first.from_cache); self.assertTrue(second.from_cache); self.assertEqual(reasoner.calls, 1)
+            first = engine.check("خبر")
+            second = engine.check("خبر")
+            self.assertFalse(first.from_cache)
+            self.assertTrue(second.from_cache)
+            self.assertEqual(reasoner.calls, 1)
 
     def test_source_policy_does_not_treat_unknown_media_as_truth(self):
-        policy = SourcePolicy(); item = SearchResult("https://unknown.example/story", "خبر", "متن")
+        policy = SourcePolicy()
+        item = SearchResult("https://unknown.example/story", "خبر", "متن")
         self.assertEqual(policy.classify(item), SourceKind.UNKNOWN)
         self.assertLess(policy.score(item, item.snippet), 0.7)
 
-if __name__ == "__main__": unittest.main()
+
+class ExtendedCoreTests(unittest.TestCase):
+    def test_transliteration_variant_is_available_in_deep_plan(self):
+        claims = analyze_claims('آیا آقای محمد رضایی منصوب شده است؟')
+        queries = plan_queries(claims, 6)
+        self.assertTrue(any(q.purpose == 'transliteration' for q in queries))
+
+    def test_argument_and_framing_are_diagnostic_not_verdicts(self):
+        from political_core.analysis import analyze_argument, analyze_framing
+        self.assertIn('causal_or_inference_marker', analyze_argument('چون رسانه گفت، پس نتیجه درست است')['signals'])
+        self.assertTrue(analyze_framing('این یک شکست سنگین بود')['has_framing_signal'])
+
+
+if __name__ == "__main__":
+    unittest.main()

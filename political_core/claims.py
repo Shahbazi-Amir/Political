@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 
 from .models import Claim, ClaimType, Intent, SearchQuery
-from .text import normalize_text
+from .analysis import extract_quoted_phrases
+from .text import normalize_text, transliterate_fa
 
 _NEGATIVE = ("هیچ", "وجود ندارد", "وجود نداشته", "نبوده", "نیست", "نشده", "صادر نشده", "تکذیب شده")
 _HIGH_IMPACT = ("جنگ", "حمله", "موشک", "کشته", "مرگ", "ترور", "بازداشت", "اعدام", "کودتا", "انتخابات", "استعفا", "عزل", "انتصاب", "جرم", "اتهام")
@@ -111,7 +112,7 @@ def analyze_claims(text: str) -> list[Claim]:
             claim_type=ctype, intent=intent, entities=_entities(part), dates=_dates(part), required_evidence=required,
             is_negative=negative, high_impact=any(x in part.casefold() for x in _HIGH_IMPACT),
             current_status=any(x in part.casefold() for x in _CURRENT) or ctype == ClaimType.CURRENT_STATUS,
-            breaking_news=any(x in part.casefold() for x in _BREAKING),
+            breaking_news=any(x in part.casefold() for x in _BREAKING), quoted_texts=extract_quoted_phrases(part),
         )
         if idx > 1 and any(x in normalized for x in ("بنابراین", "در نتیجه", "به همین دلیل")):
             claim.dependencies = [c.claim_id for c in claims]
@@ -120,28 +121,40 @@ def analyze_claims(text: str) -> list[Claim]:
 
 
 def plan_queries(claims: list[Claim], limit: int) -> list[SearchQuery]:
-    planned: list[SearchQuery] = []
+    mandatory: list[SearchQuery] = []
+    optional: list[SearchQuery] = []
     for claim in claims:
         q = claim.atomic_text[:300]
-        planned.append(SearchQuery(q, "neutral", claim.claim_id))
+        mandatory.append(SearchQuery(q, "neutral", claim.claim_id))
         if claim.claim_type in {ClaimType.APPOINTMENT, ClaimType.MEMBERSHIP}:
-            planned.append(SearchQuery(f'{q[:220]} "متن حکم" OR "حکم انتصاب"', "primary", claim.claim_id))
+            mandatory.append(SearchQuery(f'{q[:220]} "متن حکم" OR "حکم انتصاب"', "primary", claim.claim_id))
         elif claim.claim_type in {ClaimType.LEGAL, ClaimType.CONSTITUTIONAL}:
-            planned.append(SearchQuery(f'{q[:220]} "متن قانون" OR "اصل"', "primary", claim.claim_id))
+            mandatory.append(SearchQuery(f'{q[:220]} "متن قانون" OR "اصل"', "primary", claim.claim_id))
         elif claim.claim_type == ClaimType.QUOTE:
-            planned.append(SearchQuery(f'{q[:220]} "متن کامل" OR "ویدئو"', "primary", claim.claim_id))
+            mandatory.append(SearchQuery(f'{q[:220]} "متن کامل" OR "ویدئو"', "primary", claim.claim_id))
         else:
-            planned.append(SearchQuery(f'{q[:240]} "منبع رسمی"', "primary", claim.claim_id))
+            mandatory.append(SearchQuery(f'{q[:240]} "منبع رسمی"', "primary", claim.claim_id))
+
+        if limit > 2 and claim.entities:
+            latin = transliterate_fa(" ".join(claim.entities))
+            if latin and latin.casefold() != " ".join(claim.entities).casefold():
+                optional.append(SearchQuery(f'{latin} {q[:180]}', "transliteration", claim.claim_id))
         if limit > 2:
-            planned.append(SearchQuery(f'{q[:250]} تکذیب OR نادرست OR خلاف', "challenge", claim.claim_id))
-            planned.append(SearchQuery(f'{q[:250]} تایید OR تأیید OR سند', "support", claim.claim_id))
+            optional.append(SearchQuery(f'{q[:250]} تکذیب OR نادرست OR خلاف', "challenge", claim.claim_id))
+            optional.append(SearchQuery(f'{q[:250]} تایید OR تأیید OR سند', "support", claim.claim_id))
             if claim.current_status:
-                planned.append(SearchQuery(f'{q[:230]} جدیدترین OR امروز OR اکنون', "freshness", claim.claim_id))
+                optional.append(SearchQuery(f'{q[:230]} جدیدترین OR امروز OR اکنون', "freshness", claim.claim_id))
             if claim.is_negative:
-                planned.append(SearchQuery(f'{q[:220]} آرشیو OR حکم OR سند', "negative_existence", claim.claim_id))
+                optional.append(SearchQuery(f'{q[:220]} آرشیو OR حکم OR سند', "negative_existence", claim.claim_id))
+
+    ordered: list[SearchQuery] = []
+    for purpose in ("neutral", "primary"):
+        ordered.extend(q for q in mandatory if q.purpose == purpose)
+    ordered.extend(optional)
+
     out: list[SearchQuery] = []
     seen: set[str] = set()
-    for item in planned:
+    for item in ordered:
         key = normalize_text(item.text).casefold()
         if key and key not in seen:
             seen.add(key)

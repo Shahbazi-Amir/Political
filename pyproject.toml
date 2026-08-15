@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "political-core"
-version = "0.1.0"
-description = "Evidence-first political fact-checking core with strict source and cost controls"
+version = "0.2.0"
+description = "Evidence-first political fact-checking core with provenance, calibrated confidence, and strict cost controls"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
@@ -19,3 +19,7 @@ political-check = "political_core.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["political_core*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

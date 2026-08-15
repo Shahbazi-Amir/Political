@@ -1,107 +1,130 @@
 # Political Core
 
-هستهٔ **evidence-first** برای صحت‌سنجی خبر و تحلیل ادعاهای سیاسی. هدف این پروژه این نیست که یک رسانه یا جریان سیاسی را «مرجع حقیقت» فرض کند؛ هدف این است که هر ادعا ابتدا تأییدنشده باشد و فقط بر اساس شواهد قابل ردیابی، استقلال منابع، سند اولیه، تاریخ و میزان تعارض ارزیابی شود.
+هستهٔ مستقل و Persian-first برای **صحت‌سنجی سیاسی evidence-first**؛ طراحی شده برای این‌که خبر یا ادعا را از ابتدا تأییدنشده بداند، منبع اولیه را ترجیح دهد، بازنشرها را تأیید مستقل حساب نکند و در نبود شواهد کافی با اطمینان بالا جواب ندهد.
 
-## الان چه چیزی واقعاً ساخته شده؟
+## معماری
 
-این مخزن دیگر فقط طرح نیست. هستهٔ اجرایی شامل این اجزاست:
+```text
+input
+→ intent + atomic claims
+→ research plan (neutral / primary / challenge)
+→ cache
+→ search + safe fetch
+→ evidence scoring
+→ provenance / source-chain grouping
+→ structured reasoning
+→ deterministic confidence guardrails
+→ citation validation
+→ verdict + diagnostics
+```
 
-- `FactCheckEngine`: orchestration کامل claim → search → dedupe → fetch → evidence selection → reasoning → guardrails → cache
-- `SourcePolicy`: امتیاز کیفیت منبع بدون whitelist سیاسی؛ سند اولیه، بیانیه رسمی، رسانه، شبکه اجتماعی و منبع ناشناخته را از هم جدا می‌کند
-- **independence guard**: چند خبر از یک دامنه/خانواده منبع را چند تأیید مستقل حساب نمی‌کند
-- `SafeHttpFetcher`: خواندن متن منبع بدون مصرف LLM، با محدودیت حجم/timeout و جلوگیری از دسترسی به شبکه خصوصی
-- `SQLiteCache`: جلوگیری از پرداخت دوباره برای سؤال تکراری
-- `SearxNGSearchProvider`: مسیر جست‌وجوی کم‌هزینه/قابل self-host
-- `OpenAIReasoningProvider`: فقط یک structured-output call برای داوری نهایی در Quick mode
-- **epistemic guardrails**: citation جعلی، اعتماد بیش‌ازحد، تک‌منبع ضعیف و تعارض حل‌نشده confidence را محدود می‌کند
-- `FeedbackStore`: ذخیره بازخورد برای ساخت regression set و ارزیابی نسخه‌های بعدی
-- CI و تست‌های واحد برای رفتارهای حساس بالا
-
-## اصل‌های سخت سیستم
-
-1. **Default = unverified.** خبر یا حرف کاربر حقیقت فرض نمی‌شود.
-2. **تکرار ≠ تأیید مستقل.** اگر ده رسانه یک منبع واحد را بازنشر کنند، سیستم نباید آن را ده شاهد حساب کند.
-3. **سند اولیه برای ادعاهای سندی مقدم است.** حکم، قانون، رأی، متن رسمی یا انتصاب را تا حد ممکن از سند اصلی بررسی می‌کنیم.
-4. **منبع رسمی محدود به حوزه خودش معتبر است.** مثلاً سایت یک نهاد، مدرک قوی برای این است که آن نهاد چه حکمی صادر کرده؛ اما صرف رسمی بودن، هر ادعای سیاسی دیگر را حقیقت نمی‌کند.
-5. **قدیمی/جدید بودن مهم است.** واقعیت تاریخی نباید بدون بررسی به عنوان وضعیت فعلی گزارش شود.
-6. **مدل حق ساخت citation ندارد.** شناسه‌های citation بعد از مدل validate می‌شوند؛ citation نامعتبر باعث سقوط نتیجه به `unverified` می‌شود.
-7. **confidence باید کالیبره باشد.** یک رسانهٔ غیر اولیه به تنهایی نمی‌تواند verdict قطعی با confidence بالا بسازد.
-8. **تعارض پنهان نمی‌شود.** conflict در خروجی ساخت‌یافته ثبت و confidence محدود می‌شود.
+LLM اجازه ندارد URL یا منبع بسازد؛ فقط Evidence IDهایی مثل `E1` را cite می‌کند و core آن‌ها را validate می‌کند.
 
 ## Verdicts
 
-`true` · `mostly_true` · `missing_context` · `misleading` · `false` · `unverified`
+`true` · `mostly_true` · `missing_context` · `misleading` · `mostly_false` · `false` · `unverified` · `insufficient_evidence` · `conflicting_evidence` · `outdated` · `opinion_not_fact` · `prediction`
 
-## Quick vs Deep
+## محافظت‌های اصلی
 
-### Quick
+- خبر از ابتدا `UNVERIFIED` است.
+- سند اصلی برای ادعاهای حقوقی/انتصاب/عضویت اولویت دارد.
+- چند URL کپی‌شده یک تأیید مستقل محسوب نمی‌شوند.
+- source reputation فقط prior است؛ هیچ رسانه‌ای whitelist حقیقت نیست.
+- ادعای منفی با «در سرچ پیدا نشد» اثبات نمی‌شود.
+- breaking news و high-impact claims بدون سند/استقلال کافی confidence cap دارند.
+- تناقض حل‌نشده confidence را محدود می‌کند.
+- citation جعلی مدل حذف و در صورت نبود citation معتبر verdict به `unverified` محدود می‌شود.
+- محتوای وب data غیرقابل‌اعتماد است، نه instruction.
+- fetcher در برابر SSRF، private IP، redirect به شبکه خصوصی، حجم زیاد و content-type نامجاز محافظت دارد.
 
-- حداکثر ۲ query
-- ۵ منبع منتخب
-- ۵ fetch وب
-- **۱ فراخوانی مدل**
-- cache شش‌ساعته
+## Quick و Deep
 
-برای پاسخ روزمره بات مناسب است.
+Quick پیش‌فرض برای بات:
 
-### Deep
+```text
+2 query
+5 fetch
+5 source
+1 reasoning call
+```
 
-- حداکثر ۶ query
-- ۱۰ منبع منتخب
-- ۱۰ fetch وب
-- budget بزرگ‌تر و cache کوتاه‌تر
+Deep:
 
-برای ادعاهای حساس، تاریخی، «هیچ سندی وجود ندارد»، یا منابع متناقض مناسب است.
+```text
+6 query
+12 fetch
+12 source
+حداکثر 2 reasoning call در budget
+```
+
+نسخه فعلی engine عمداً در یک check معمولی فقط یک reasoning call انجام می‌دهد؛ budget دوم برای repair/escalation صریح آینده رزرو شده و loop نامحدود وجود ندارد.
 
 ## نصب
 
-هستهٔ پایه dependency اجباری خارجی ندارد:
-
 ```bash
-python -m unittest discover -s tests -v
+python -m pip install -e '.[dev]'
 ```
 
-برای OpenAI adapter:
+OpenAI adapter اختیاری:
 
 ```bash
-pip install -e '.[openai]'
+python -m pip install -e '.[openai]'
 ```
 
-## اجرای واقعی کم‌هزینه
-
-پیشنهاد فعلی: search را روی SearxNG انجام بده و فقط reasoning نهایی را به مدل بسپار.
+## تنظیمات CLI
 
 ```bash
 export SEARXNG_URL='https://your-searxng.example'
 export OPENAI_API_KEY='...'
-export POLITICAL_MODEL='YOUR_MODEL_NAME'
-political-check 'آیا این خبر درست است؟' --mode quick
+export OPENAI_MODEL='...'
 ```
 
-کلیدها فقط از environment خوانده می‌شوند و نباید داخل repository قرار بگیرند.
+مدل عمداً hard-code نشده تا انتخاب هزینه/کیفیت و تغییرات مدل‌ها دست اپراتور باشد.
 
-## معماری پاسخ پیشنهادی برای Telegram/Web
+## اجرا
 
-UI باید نتیجهٔ core را بدون تغییر حقیقت نمایش دهد:
-
-```text
-نتیجه: گمراه‌کننده
-اطمینان: 0.78
-
-چرا؟
-- نکته ۱ [E1]
-- نکته ۲ [E3]
-
-ابهام باقی‌مانده:
-...
-
-منابع:
-E1 — سند/خبر ...
-E3 — منبع مستقل ...
+```bash
+political-check "آیا این ادعا درست است؟"
+political-check --deep "آیا این ادعا درست است؟"
+political-check --json "آیا این ادعا درست است؟"
 ```
 
-## نکته مهم درباره «قوی بودن»
+اگر provider خارجی تنظیم نشده باشد CLI با خطای configuration واضح متوقف می‌شود و پاسخ ساختگی تولید نمی‌کند.
 
-هیچ fact-checker جدی با prompt تنها قوی نمی‌شود. قدرت این سیستم باید با **dataset واقعی، regression tests، calibration و ثبت خطاها** اندازه‌گیری شود. این نسخه guardrailهای معماری لازم را دارد، اما قبل از ادعای production-grade بودن باید روی مجموعه‌ای از ادعاهای واقعی فارسی/سیاسی ارزیابی و نرخ خطا اندازه‌گیری شود.
+## Cost controls
 
-قدم بعدی پروژه: ساخت dataset ارزیابی فارسی، تست live روی خبرهای واقعی، سپس Telegram adapter.
+تنظیم‌های اصلی محیط:
+
+`QUICK_MAX_QUERIES`, `QUICK_MAX_FETCHES`, `QUICK_MAX_SOURCES`, `DEEP_MAX_QUERIES`, `DEEP_MAX_FETCHES`, `DEEP_MAX_SOURCES`, `CACHE_PATH`, `FETCH_TIMEOUT`, `MAX_RESPONSE_BYTES`, `STORE_USER_CONTENT`.
+
+SQLite cache قبل از مصرف provider بررسی می‌شود. TTL برای breaking/current-status کوتاه‌تر است.
+
+## Evaluation
+
+Runner برای datasetهای curated به‌صورت JSONL:
+
+```bash
+political-check --eval-jsonl evals/my_cases.jsonl
+```
+
+Metrics فعلی شامل verdict accuracy، high-confidence accuracy، false-high-confidence rate و citation validity است. پروژه عمداً ground truth سیاسی ساختگی داخل repo نمی‌گذارد؛ dataset سیاسی باید با منبع و بازبینی انسانی curate شود.
+
+## تست
+
+```bash
+python -m pytest
+python -m compileall -q political_core
+```
+
+سناریوهای adversarial شامل خبرهای copy، citation جعلی، ادعای منفی، breaking/high-impact، تضاد منابع و SSRF هستند.
+
+## مستندات
+
+- `docs/architecture.md`
+- `docs/fact-checking-policy.md`
+- `docs/confidence-model.md`
+- `docs/security.md`
+
+## اتصال Telegram/Web
+
+Core هیچ dependency تلگرامی ندارد. Adapter باید فقط `FactCheckEngine.check()` را صدا بزند و نتیجه را render کند؛ منطق صحت‌سنجی نباید داخل UI قرار بگیرد.

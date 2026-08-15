@@ -1,6 +1,5 @@
-"""Evidence-first political fact-checking core."""
-
 from .engine import FactCheckEngine
-from .models import Budget, FactCheckResult, Verdict
+from .models import FactCheckResult, Verdict
 
-__all__ = ["Budget", "FactCheckEngine", "FactCheckResult", "Verdict"]
+__all__ = ["FactCheckEngine", "FactCheckResult", "Verdict"]
+__version__ = "0.2.0"

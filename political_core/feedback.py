@@ -1,31 +1,28 @@
 from __future__ import annotations
 
 import sqlite3
-import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .text import fingerprint
+_ALLOWED = {"correct", "wrong", "partially_wrong", "bad_source", "missed_source", "bad_verdict", "bad_reasoning", "outdated"}
 
 
 class FeedbackStore:
-    def __init__(self, path: str | Path = "political_feedback.sqlite3") -> None:
+    def __init__(self, path: str | Path) -> None:
         self.path = str(path)
-        with sqlite3.connect(self.path) as conn:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS feedback (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    claim_key TEXT NOT NULL,
-                    rating INTEGER NOT NULL CHECK(rating BETWEEN -1 AND 1),
-                    note TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL
-                )"""
-            )
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.path) as con:
+            con.execute("""CREATE TABLE IF NOT EXISTS feedback(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                result_id TEXT,
+                claim TEXT,
+                feedback_type TEXT NOT NULL,
+                comment TEXT,
+                created_at TEXT NOT NULL
+            )""")
 
-    def add(self, claim: str, rating: int, note: str = "") -> None:
-        if rating not in {-1, 0, 1}:
-            raise ValueError("rating must be -1, 0, or 1")
-        with sqlite3.connect(self.path) as conn:
-            conn.execute(
-                "INSERT INTO feedback(claim_key, rating, note, created_at) VALUES (?, ?, ?, ?)",
-                (fingerprint(claim), rating, note[:2000], int(time.time())),
-            )
+    def add(self, *, result_id: str, claim: str, feedback_type: str, comment: str = "") -> None:
+        if feedback_type not in _ALLOWED:
+            raise ValueError(f"unsupported feedback type: {feedback_type}")
+        with sqlite3.connect(self.path) as con:
+            con.execute("INSERT INTO feedback(result_id,claim,feedback_type,comment,created_at) VALUES(?,?,?,?,?)", (result_id, claim, feedback_type, comment, datetime.now(timezone.utc).isoformat()))

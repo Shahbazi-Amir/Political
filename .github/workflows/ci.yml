@@ -25,5 +25,9 @@ jobs:
         run: python -m pytest -q -m "not live"
       - name: Validate 100-case review queue
         run: python -m political_core.dataset evals/cases/persian_political_review_queue.jsonl.gz --require-review-queue-ready
+      - name: Dataset manifest smoke
+        run: python -m political_core.dataset_manifest evals/cases/persian_political_review_queue.jsonl.gz
       - name: Evaluation smoke
         run: python -m political_core.cli --eval-jsonl evals/fixtures/smoke.jsonl
+      - name: Release readiness smoke
+        run: python -m political_core.readiness --dataset evals/cases/persian_political_review_queue.jsonl.gz --software-tests pass --security-tests pass

@@ -2,9 +2,6 @@ name: Live validation
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - .github/live-validation-trigger
 
 permissions:
   contents: read

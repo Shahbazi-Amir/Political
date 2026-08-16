@@ -2,6 +2,12 @@ name: Live validation
 
 on:
   workflow_dispatch:
+    inputs:
+      allow_skip:
+        description: "Allow a missing-secret run to finish as SKIPPED instead of failing configuration validation"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,21 +34,64 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "Live validation skipped: one or more required repository secrets are not configured."
           fi
-      - name: Run live Quick and Deep validation
+      - name: Run live Quick validation
+        id: quick
         if: steps.config.outputs.configured == 'true'
+        continue-on-error: true
         env:
           RUN_LIVE_TESTS: "1"
           SEARXNG_URL: ${{ secrets.SEARXNG_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-        run: python -m pytest -q -m live tests/test_live.py
-      - name: Summary
+        run: python -m pytest -q -m live -k live_quick tests/test_live.py
+      - name: Run live Deep validation
+        id: deep
+        if: steps.config.outputs.configured == 'true'
+        continue-on-error: true
+        env:
+          RUN_LIVE_TESTS: "1"
+          SEARXNG_URL: ${{ secrets.SEARXNG_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        run: python -m pytest -q -m live -k live_deep tests/test_live.py
+      - name: Create live validation evidence
+        if: always()
+        env:
+          CONFIGURED: ${{ steps.config.outputs.configured }}
+          QUICK_OUTCOME: ${{ steps.quick.outcome }}
+          DEEP_OUTCOME: ${{ steps.deep.outcome }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from political_core.release_evidence import live_report
+          configured=os.getenv("CONFIGURED")=="true"
+          def status(value):
+              if not configured: return "skipped"
+              return "passed" if value=="success" else "failed"
+          report=live_report(os.environ["GITHUB_SHA"],configuration_available=configured,quick_status=status(os.getenv("QUICK_OUTCOME")),deep_status=status(os.getenv("DEEP_OUTCOME")))
+          with open("live-validation-report.json","w",encoding="utf-8") as f:
+              json.dump(report,f,ensure_ascii=False,indent=2)
+          PY
+      - name: Upload live evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-validation-evidence
+          path: live-validation-report.json
+      - name: Enforce live validation result
+        if: always()
         shell: bash
         run: |
-          if [[ "${{ steps.config.outputs.configured }}" == "true" ]]; then
-            echo "Live validation executed." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Live validation SKIPPED: configure SEARXNG_URL, OPENAI_API_KEY and OPENAI_MODEL repository secrets, then dispatch again." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.config.outputs.configured }}" != "true" ]]; then
+            if [[ "${{ inputs.allow_skip }}" == "true" ]]; then
+              echo "Live validation explicitly SKIPPED because required repository secrets are missing."
+              exit 0
+            fi
+            echo "Live validation configuration missing. This is NOT a pass."
+            exit 2
+          fi
+          if [[ "${{ steps.quick.outcome }}" != "success" || "${{ steps.deep.outcome }}" != "success" ]]; then
+            echo "One or more live validation stages failed."
+            exit 3
           fi

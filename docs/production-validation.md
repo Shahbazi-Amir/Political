@@ -1,43 +1,65 @@
-# Production validation plan
+# Production validation status
 
-این سند وضعیت واقعی اجرای برنامهٔ hardening را ثبت می‌کند.
+این سند وضعیت واقعی hardening را ثبت می‌کند. معیار اصلی پروژه کاهش `wrong answer with high confidence` است؛ کمبود شواهد باید به verdict محافظه‌کارانه منجر شود و هر defect کشف‌شده regression test داشته باشد.
 
-## اصل ارزیابی
+## پیاده‌سازی‌شده
 
-هدف اصلی کاهش `wrong answer with high confidence` است. سیستم باید در کمبود شواهد به verdict محافظه‌کارانه برود و هر خطای کشف‌شده به regression test تبدیل شود.
-
-## فازهای پیاده‌سازی‌شده
-
-- dataset validator برای ۱۶ دسته و review queue صدتایی
-- calibration و false-high-confidence reporting
-- primary-source precision evaluation helper
-- low-cost provenance با attribution، quote/paragraph/shingle overlap و time
-- entity aliases برای نام‌های فارسی/لاتین منتخب بدون معتبر دانستن transliteration حدسی
-- role-aware timeline که سمت‌های همزمان یک فرد را ادغام نمی‌کند
-- search-query cleanup با budget ثابت
-- CacheBackend abstraction بدون dependency اجباری Redis/Postgres
-- application layer مستقل از Telegram/HTTP
-- dependency-free Telegram command adapter
+- review queue فارسی ۱۰۰ پرونده‌ای در ۱۶ دسته با source provenance
+- schema/category/source validation و جلوگیری از شمردن synthetic/machine-prepared به‌عنوان accuracy
+- workflow بازبینی انسانی مستقل با case fingerprint، stale-review rejection، reviewer metadata و fail-closed batch apply
+- production benchmark gating فقط روی reviewهای auditable
+- calibration، Brier، ECE و false-high-confidence reporting
+- cost summary شامل search/fetch provider calls و cache-hit rates، علاوه بر final cache
+- primary-source precision helper که فقط reviewهای auditable را برای production metric می‌پذیرد
+- provenance graph با attribution، quote/paragraph/shingle overlap و time؛ weak links برای diagnostics نگه داشته می‌شوند ولی زیر threshold قوی copy-chain را collapse نمی‌کنند
+- entity aliases و role-aware timeline
+- query cleanup و budget enforcement
+- CacheBackend abstraction و SQLite/WAL
+- application layer و Telegram transport adapter مستقل از business logic
 - quick/deep live-test harness
-- failure-matrix regression tests
+- failure matrix برای search/reasoning/cache/network behavior
 
-## چیزی که هنوز قابل ادعا نیست
+## وضعیت dataset
 
-۱۰۰ پروندهٔ موجود machine-prepared/source-backed هستند، نه independently human-reviewed. بنابراین `production_accuracy_established` باید false بماند تا بازبینی انسانی کامل شود.
+فایل `evals/cases/persian_political_review_queue.jsonl.gz` machine-prepared/source-backed است. وجود URL یا candidate verdict به معنی ground truth تأییدشده نیست.
 
-Live end-to-end نیز فقط وقتی معتبر است که `RUN_LIVE_TESTS=1`, `SEARXNG_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` واقعاً در محیط اجرا وجود داشته باشند. CI عادی verdict سیاسی زنده جعل نمی‌کند.
+برای benchmark production، case باید علاوه بر `review_status=verified` و `independent_human_review=true` دارای `reviewer_id`, `reviewer_note` و `review_case_hash` معتبر باشد. Hash از همان fieldsی محاسبه می‌شود که reviewer دیده است؛ تغییر بعدی claim/source/date/category/candidate verdict/preparer آن review را غیرقابل استفاده می‌کند.
 
-## معیارهای production
+در نبود reviewer انسانی مستقل، `verified_cases` و `auditable_verified_cases` نباید مصنوعی بالا برده شوند.
 
-برای ادعای production accuracy:
+## معیار production
 
-- حداقل ۱۰۰ پروندهٔ `verified`
-- حداقل ۵ مورد در هر ۱۶ دسته
-- ground-truth source غیرخالی
+قبل از ادعای production accuracy همهٔ موارد زیر لازم است:
+
+- حداقل ۱۰۰ case auditable verified
+- حداقل ۵ case auditable verified در هر ۱۶ دستهٔ لازم
+- ground-truth source غیرخالی و قابل بررسی
 - independent human review
-- گزارش false-high-confidence rate و calibration
 - citation integrity
-- primary-source precision
-- source-independence accuracy
+- false-high-confidence rate و calibration report
+- primary-source precision report
+- source-independence evaluation
+- cost/latency report روی workload واقعی
 
-نمونهٔ کوچک یا synthetic هرگز کافی نیست.
+هیچ threshold عددی به‌تنهایی تضمین «حقیقت سیاسی» نیست؛ این‌ها حداقل شروط benchmark governance هستند.
+
+## Live end-to-end
+
+Live suite فقط زمانی اجرا می‌شود که محیط واقعاً دارای این مقادیر باشد:
+
+```text
+RUN_LIVE_TESTS=1
+SEARXNG_URL
+OPENAI_API_KEY
+OPENAI_MODEL
+```
+
+Quick مسیر search → fetch → source assessment → provenance → Judge → guardrails را بررسی می‌کند. Deep علاوه بر آن Judge → Critic → reconciliation را تست می‌کند. verdict سیاسی در live test hard-code نشده است.
+
+CI عادی بدون credential، live result جعل نمی‌کند و فقط deterministic/security/adversarial suite را اجرا می‌کند.
+
+## اصل گزارش‌دهی
+
+تا وقتی dataset auditable کافی وجود ندارد، خروجی evaluation باید صریحاً بگوید:
+
+`Production political accuracy is not yet statistically established.`

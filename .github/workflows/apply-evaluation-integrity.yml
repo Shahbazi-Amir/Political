@@ -50,3 +50,5 @@ jobs:
           git add -A
           git commit -m "harden evaluation integrity and release evidence"
           git push origin HEAD:main
+
+# verified payload retrigger

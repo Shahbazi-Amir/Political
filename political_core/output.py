@@ -1,8 +1,13 @@
 from __future__ import annotations
+
 from .models import FactCheckResult,Verdict
+
 _LABELS={Verdict.TRUE:"✅ درست",Verdict.MOSTLY_TRUE:"🟢 عمدتاً درست",Verdict.MISSING_CONTEXT:"🟠 ناقص/بدون زمینه",Verdict.MISLEADING:"🟡 گمراه‌کننده",Verdict.MOSTLY_FALSE:"🟠 عمدتاً نادرست",Verdict.FALSE:"❌ نادرست",Verdict.UNVERIFIED:"❓ قابل تأیید نیست",Verdict.INSUFFICIENT_EVIDENCE:"❓ شواهد ناکافی",Verdict.CONFLICTING_EVIDENCE:"⚠️ شواهد متناقض",Verdict.OUTDATED:"🕒 تاریخ‌گذشته",Verdict.OPINION_NOT_FACT:"💬 نظر، نه واقعیت",Verdict.PREDICTION:"🔮 پیش‌بینی",Verdict.VERIFICATION_UNAVAILABLE:"⚠️ بررسی در دسترس نبود"}
+_STRENGTH={"high":"قوی","medium":"متوسط","low":"ضعیف"}
+
+
 def render_persian(result:FactCheckResult)->str:
-    lines=[f"نتیجه: {_LABELS.get(result.verdict,result.verdict.value)}",f"اطمینان: {round(result.confidence*100)}٪",f"قدرت شواهد: {result.evidence_strength}","","اصل ماجرا:",result.summary]
+    lines=[f"نتیجه: {_LABELS.get(result.verdict,result.verdict.value)}",f"اطمینان: {round(result.confidence*100)}٪",f"قدرت شواهد: {_STRENGTH.get(result.evidence_strength,result.evidence_strength)}","","اصل ماجرا:",result.summary]
     if result.key_points:lines+=["","نکات اصلی:"]+[f"• {x}" for x in result.key_points]
     if result.contradicting_evidence_ids:lines+=["",f"شواهد مخالف: {', '.join(result.contradicting_evidence_ids)}"]
     if result.missing_evidence:lines+=["","چه چیزی هنوز کم است؟"]+[f"• {x}" for x in result.missing_evidence[:8]]
@@ -10,6 +15,14 @@ def render_persian(result:FactCheckResult)->str:
     if result.coverage:
         low=[c for c in result.coverage if c.coverage_score<.75]
         if low:lines+=["","پوشش تحقیق:"]+[f"• {c.claim_id}: {round(c.coverage_score*100)}٪" for c in low]
+    primary=[e for e in result.evidence if e.evidence_id in result.citation_ids and e.primary_assessment.is_primary]
+    if primary:lines+=["",f"سند اولیه معتبر: {', '.join(e.evidence_id for e in primary)}"]
+    independent=result.diagnostics.get("independent_source_groups")
+    if independent is not None:lines.append(f"منابع مستقلِ استنادشده: {independent}")
+    if result.diagnostics.get("critic_used"):lines.append("بررسی عمیق: Judge + Critic اجرا شد")
+    if result.timeline:
+        lines+=["","خط زمانی:"]
+        for event in result.timeline[:6]:lines.append(f"• {event.start_date or '?'} — {event.entity or '?'} — {event.event_type} — {event.role or 'سمت نامشخص'}")
     cited={e.evidence_id:e for e in result.evidence if e.evidence_id in result.citation_ids}
     if cited:
         lines+=["","منابع:"]

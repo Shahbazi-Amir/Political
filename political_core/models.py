@@ -178,6 +178,8 @@ class SearchResult:
     issuer_hint: str | None = None
     document_type_hint: str | None = None
     retrieval_purposes: list[str] = field(default_factory=list)
+    retrieval_claim_ids: list[str] = field(default_factory=list)
+    search_engine: str | None = None
 
 
 @dataclass(slots=True)
@@ -277,6 +279,7 @@ class Evidence:
     proves_statement_made: bool = False
     supports_underlying_fact: bool = False
     retrieval_purposes: list[str] = field(default_factory=list)
+    retrieval_claim_ids: list[str] = field(default_factory=list)
 
     def to_prompt_dict(self) -> dict[str, Any]:
         return {
@@ -299,6 +302,7 @@ class Evidence:
             "supports_underlying_fact": self.supports_underlying_fact,
             "document_state": self.document_state.value,
             "retrieval_purposes": self.retrieval_purposes,
+            "retrieval_claim_ids": self.retrieval_claim_ids,
             "excerpt": self.excerpt,
         }
 

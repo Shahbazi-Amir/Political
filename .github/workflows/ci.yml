@@ -21,7 +21,7 @@ jobs:
         run: python -m pip install pytest
       - name: Compile
         run: python -m compileall -q political_core
-      - name: Unit, security and adversarial tests
+      - name: Unit, security, adversarial and regression tests
         run: python -m pytest -q -m "not live"
       - name: Validate 100-case review queue
         run: python -m political_core.dataset evals/cases/persian_political_review_queue.jsonl.gz --require-review-queue-ready
@@ -29,5 +29,20 @@ jobs:
         run: python -m political_core.dataset_manifest evals/cases/persian_political_review_queue.jsonl.gz
       - name: Evaluation smoke
         run: python -m political_core.cli --eval-jsonl evals/fixtures/smoke.jsonl
+      - name: Benchmark schema smoke
+        run: python -m political_core.benchmark_report evals/cases/persian_political_review_queue.jsonl.gz --git-sha "$GITHUB_SHA" --output benchmark-smoke.json
       - name: Release readiness smoke
-        run: python -m political_core.readiness --dataset evals/cases/persian_political_review_queue.jsonl.gz --software-tests pass --security-tests pass
+        run: python -m political_core.readiness --dataset evals/cases/persian_political_review_queue.jsonl.gz --software-tests pass --security-tests pass --unsafe-manual-evidence
+      - name: Create CI evidence
+        run: |
+          python - <<'PY'
+          import json, os
+          from political_core.release_evidence import ci_report
+          with open("ci-report.json","w",encoding="utf-8") as f:
+              json.dump(ci_report(os.environ["GITHUB_SHA"], software_tests_pass=True, security_tests_pass=True), f, ensure_ascii=False, indent=2)
+          PY
+      - name: Upload CI evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-evidence
+          path: ci-report.json

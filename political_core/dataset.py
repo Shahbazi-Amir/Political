@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,7 @@ REQUIRED_CATEGORIES = (
 )
 _REVIEW_STATES = {"human_required", "machine_prepared", "verified", "rejected"}
 _VALID_VERDICTS = {v.value for v in Verdict}
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(slots=True)
@@ -24,9 +26,11 @@ class DatasetValidation:
     total_cases:int=0
     valid_cases:int=0
     verified_cases:int=0
+    auditable_verified_cases:int=0
     review_ready_cases:int=0
     duplicate_ids:list[str]=field(default_factory=list)
     errors:list[dict[str,Any]]=field(default_factory=list)
+    review_audit_failures:list[str]=field(default_factory=list)
     category_counts:dict[str,int]=field(default_factory=dict)
     verified_category_counts:dict[str,int]=field(default_factory=dict)
 
@@ -37,9 +41,18 @@ class DatasetValidation:
         return self.valid and self.review_ready_cases>=100 and all(self.category_counts.get(c,0)>=5 for c in REQUIRED_CATEGORIES)
     @property
     def production_benchmark_ready(self)->bool:
-        return self.valid and self.verified_cases>=100 and all(self.verified_category_counts.get(c,0)>=5 for c in REQUIRED_CATEGORIES)
+        return (
+            self.valid and self.auditable_verified_cases>=100 and not self.review_audit_failures
+            and all(self.verified_category_counts.get(c,0)>=5 for c in REQUIRED_CATEGORIES)
+        )
     def to_dict(self)->dict[str,Any]:
-        return {"total_cases":self.total_cases,"valid_cases":self.valid_cases,"verified_cases":self.verified_cases,"review_ready_cases":self.review_ready_cases,"duplicate_ids":self.duplicate_ids,"errors":self.errors,"category_counts":self.category_counts,"verified_category_counts":self.verified_category_counts,"review_queue_ready":self.review_queue_ready,"production_benchmark_ready":self.production_benchmark_ready}
+        return {
+            "total_cases":self.total_cases,"valid_cases":self.valid_cases,"verified_cases":self.verified_cases,
+            "auditable_verified_cases":self.auditable_verified_cases,"review_ready_cases":self.review_ready_cases,
+            "duplicate_ids":self.duplicate_ids,"errors":self.errors,"review_audit_failures":self.review_audit_failures,
+            "category_counts":self.category_counts,"verified_category_counts":self.verified_category_counts,
+            "review_queue_ready":self.review_queue_ready,"production_benchmark_ready":self.production_benchmark_ready,
+        }
 
 
 def iter_jsonl(path:str|Path)->Iterable[tuple[int,dict[str,Any]]]:
@@ -60,6 +73,12 @@ def _public_http_url(value:str)->bool:
     try:parts=urlsplit(value)
     except Exception:return False
     return parts.scheme in {"http","https"} and bool(parts.hostname)
+
+
+def _auditable_verified_case(case:dict[str,Any])->bool:
+    reviewer=str(case.get("reviewer_id") or "").strip()
+    review_hash=str(case.get("review_case_hash") or "").strip().lower()
+    return bool(reviewer and _HEX64.fullmatch(review_hash))
 
 
 def validate_case(case:dict[str,Any],*,line_no:int|None=None)->list[str]:
@@ -101,15 +120,25 @@ def validate_jsonl(path:str|Path)->DatasetValidation:
             report.errors.append({"line":line_no,"id":case_id or None,"errors":errors});continue
         report.valid_cases+=1;category=str(case["category"]);categories[category]+=1
         if case.get("review_status") in {"human_required","machine_prepared","verified"}:report.review_ready_cases+=1
-        if case.get("review_status")=="verified":report.verified_cases+=1;verified_categories[category]+=1
+        if case.get("review_status")=="verified":
+            report.verified_cases+=1
+            if _auditable_verified_case(case):
+                report.auditable_verified_cases+=1;verified_categories[category]+=1
+            else:
+                report.review_audit_failures.append(case_id)
     report.duplicate_ids=sorted(duplicates)
+    report.review_audit_failures=sorted(x for x in report.review_audit_failures if x)
     report.category_counts={c:categories.get(c,0) for c in REQUIRED_CATEGORIES}
     report.verified_category_counts={c:verified_categories.get(c,0) for c in REQUIRED_CATEGORIES}
     return report
 
 
 def promote_verified(case:dict[str,Any],*,expected_verdict:str,reviewed_at:str,reviewer_note:str,acceptable_verdicts:list[str]|None=None)->dict[str,Any]:
-    """Promote only when the caller supplies metadata from a real human review."""
+    """Promote only when the caller supplies metadata from a real human review.
+
+    This low-level helper keeps backward compatibility. Production eligibility additionally
+    requires reviewer_id + review_case_hash, which the political_core.review workflow records.
+    """
     if expected_verdict not in _VALID_VERDICTS:raise ValueError("expected_verdict is invalid")
     if not reviewed_at or not reviewer_note.strip():raise ValueError("reviewed_at and reviewer_note are required")
     out=dict(case);out.update({"review_status":"verified","expected_verdict":expected_verdict,"acceptable_verdicts":list(acceptable_verdicts or [expected_verdict]),"independent_human_review":True,"reviewed_at":reviewed_at,"ground_truth_notes":reviewer_note})

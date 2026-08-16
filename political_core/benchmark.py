@@ -21,6 +21,20 @@ class CostSummary:
     average_latency_seconds: float | None
     total_estimated_cost: float | None
     final_cache_hits: int
+    search_cache_hits: int = 0
+    search_provider_calls: int = 0
+    fetch_cache_hits: int = 0
+    fetch_provider_calls: int = 0
+
+    @property
+    def search_cache_hit_rate(self) -> float | None:
+        total=self.search_cache_hits+self.search_provider_calls
+        return round(self.search_cache_hits/total,4) if total else None
+
+    @property
+    def fetch_cache_hit_rate(self) -> float | None:
+        total=self.fetch_cache_hits+self.fetch_provider_calls
+        return round(self.fetch_cache_hits/total,4) if total else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -34,11 +48,28 @@ class CostSummary:
             "average_latency_seconds": self.average_latency_seconds,
             "total_estimated_cost": self.total_estimated_cost,
             "final_cache_hits": self.final_cache_hits,
+            "search_cache_hits": self.search_cache_hits,
+            "search_provider_calls": self.search_provider_calls,
+            "search_cache_hit_rate": self.search_cache_hit_rate,
+            "fetch_cache_hits": self.fetch_cache_hits,
+            "fetch_provider_calls": self.fetch_provider_calls,
+            "fetch_cache_hit_rate": self.fetch_cache_hit_rate,
         }
 
 
 def _avg(values: list[float]) -> float | None:
     return round(sum(values)/len(values), 4) if values else None
+
+
+def _nested_counter(rows: list[FactCheckResult], *, section: str, key: str, field: str) -> int:
+    total=0
+    for row in rows:
+        source=getattr(row,section,{}) or {}
+        stats=source.get(key,{}) if isinstance(source,dict) else {}
+        value=stats.get(field,0) if isinstance(stats,dict) else 0
+        if isinstance(value,(int,float)):
+            total+=int(value)
+    return total
 
 
 def summarize_costs(results: Iterable[FactCheckResult]) -> CostSummary:
@@ -62,6 +93,10 @@ def summarize_costs(results: Iterable[FactCheckResult]) -> CostSummary:
         average_latency_seconds=_avg(values("duration_seconds")),
         total_estimated_cost=round(sum(costs),6) if costs else None,
         final_cache_hits=sum(1 for row in rows if row.from_cache),
+        search_cache_hits=_nested_counter(rows,section="diagnostics",key="search_provider_stats",field="cache_hits"),
+        search_provider_calls=_nested_counter(rows,section="diagnostics",key="search_provider_stats",field="provider_calls"),
+        fetch_cache_hits=_nested_counter(rows,section="analysis",key="fetch_provider_stats",field="cache_hits"),
+        fetch_provider_calls=_nested_counter(rows,section="analysis",key="fetch_provider_stats",field="provider_calls"),
     )
 
 

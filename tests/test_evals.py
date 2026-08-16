@@ -8,7 +8,7 @@ from political_core.evals import evaluate_jsonl
 
 
 def auditable(**updates):
-    row={"id":"x","claim":"ادعا","language":"fa","claim_type":"event","category":"appointment","reference_date":"2026-08-16","candidate_verdict":"true","ground_truth_sources":["https://example.gov/doc"],"ground_truth_notes":"source note","tags":["appointment"],"preparer_id":"machine","review_status":"verified","independent_human_review":True,"reviewed_at":"2026-08-16","reviewer_id":"human","reviewer_note":"checked","expected_verdict":"true","actual_verdict":"true","acceptable_verdicts":["true"],"confidence":.9,"citation_ids":["E1"],"available_evidence_ids":["E1"]}
+    row={"id":"x","claim":"ادعا","language":"fa","claim_type":"event","category":"appointment","reference_date":"2026-08-16","candidate_verdict":"true","ground_truth_sources":["https://example.gov/doc"],"ground_truth_notes":"source note","tags":["appointment"],"preparer_id":"machine","review_status":"verified","independent_human_review":True,"reviewed_at":"2026-08-16T00:00:00+00:00","reviewer_id":"human","reviewer_note":"checked","expected_verdict":"true","actual_verdict":"true","acceptable_verdicts":["true"],"confidence":.9,"citation_ids":["E1"],"available_evidence_ids":["E1"]}
     row.update(updates);row["review_case_hash"]=review_case_fingerprint(row);return row
 
 

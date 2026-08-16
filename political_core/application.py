@@ -5,22 +5,33 @@ from datetime import datetime
 from typing import Protocol
 from .engine import FactCheckEngine
 from .models import FactCheckResult
-from .observability import MetricsSink,metric_from_result
+from .observability import MetricsSink,metric_from_error,metric_from_result
 from .output import render_persian
 from .text import fingerprint
+
 class FeedbackSink(Protocol):
     def add(self,result_id:str,claim:str,feedback_type:str,comment:str="")->None:...
+
 @dataclass(slots=True)
 class ApplicationResponse:
     result:FactCheckResult;text:str;result_id:str;request_id:str=""
+
 class PoliticalApplication:
     def __init__(self,engine:FactCheckEngine,feedback:FeedbackSink|None=None,metrics:MetricsSink|None=None)->None:self.engine=engine;self.feedback=feedback;self.metrics=metrics
     @staticmethod
     def result_id(result:FactCheckResult)->str:return fingerprint(f"{result.normalized_claim}|{result.verdict.value}|{result.confidence:.3f}")[:20]
     def check(self,claim:str,*,deep:bool=False,refresh:bool=False,reference_date:datetime|None=None,request_id:str|None=None)->ApplicationResponse:
         mode="deep" if deep else "quick";request_id=request_id or uuid.uuid4().hex;started=time.perf_counter()
-        if reference_date is None:result=self.engine.check(claim,mode=mode,refresh=refresh)
-        else:result=self.engine.check(claim,mode=mode,refresh=refresh,reference_date=reference_date)
+        # Request boundaries reset thread-local provider counters so concurrent requests cannot steal each other's metrics.
+        for provider in (getattr(self.engine,"search",None),getattr(self.engine,"fetcher",None)):
+            reset=getattr(provider,"reset_request_stats",None)
+            if callable(reset):reset()
+        try:
+            if reference_date is None:result=self.engine.check(claim,mode=mode,refresh=refresh)
+            else:result=self.engine.check(claim,mode=mode,refresh=refresh,reference_date=reference_date)
+        except Exception as exc:
+            if self.metrics is not None:self.metrics.emit(metric_from_error(request_id,mode=mode,latency_seconds=time.perf_counter()-started,error_type=type(exc).__name__))
+            raise
         latency=time.perf_counter()-started
         if self.metrics is not None:self.metrics.emit(metric_from_result(result,request_id,mode=mode,latency_seconds=latency))
         return ApplicationResponse(result,render_persian(result),self.result_id(result),request_id)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import re
 from collections import Counter
@@ -15,6 +16,10 @@ from .models import Verdict
 REQUIRED_CATEGORIES = (
     "appointment","dismissal","membership","current_status","constitutional","legal","quote","negative_claim",
     "breaking_news_like","copied_sources","conflicting_sources","official_statement_vs_fact","outdated_claim","misleading","missing_context","causal_argument",
+)
+REVIEW_FINGERPRINT_FIELDS = (
+    "id","claim","language","claim_type","category","reference_date","candidate_verdict",
+    "ground_truth_sources","ground_truth_notes","tags","preparer_id","prepared_by",
 )
 _REVIEW_STATES = {"human_required", "machine_prepared", "verified", "rejected"}
 _VALID_VERDICTS = {v.value for v in Verdict}
@@ -41,10 +46,7 @@ class DatasetValidation:
         return self.valid and self.review_ready_cases>=100 and all(self.category_counts.get(c,0)>=5 for c in REQUIRED_CATEGORIES)
     @property
     def production_benchmark_ready(self)->bool:
-        return (
-            self.valid and self.auditable_verified_cases>=100 and not self.review_audit_failures
-            and all(self.verified_category_counts.get(c,0)>=5 for c in REQUIRED_CATEGORIES)
-        )
+        return self.valid and self.auditable_verified_cases>=100 and not self.review_audit_failures and all(self.verified_category_counts.get(c,0)>=5 for c in REQUIRED_CATEGORIES)
     def to_dict(self)->dict[str,Any]:
         return {
             "total_cases":self.total_cases,"valid_cases":self.valid_cases,"verified_cases":self.verified_cases,
@@ -69,16 +71,24 @@ def iter_jsonl(path:str|Path)->Iterable[tuple[int,dict[str,Any]]]:
             yield line_no,value
 
 
+def review_case_fingerprint(case:dict[str,Any])->str:
+    payload={key:case.get(key) for key in REVIEW_FINGERPRINT_FIELDS}
+    encoded=json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(",",":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _public_http_url(value:str)->bool:
     try:parts=urlsplit(value)
     except Exception:return False
     return parts.scheme in {"http","https"} and bool(parts.hostname)
 
 
-def _auditable_verified_case(case:dict[str,Any])->bool:
-    reviewer=str(case.get("reviewer_id") or "").strip()
-    review_hash=str(case.get("review_case_hash") or "").strip().lower()
-    return bool(reviewer and _HEX64.fullmatch(review_hash))
+def is_auditable_verified_case(case:dict[str,Any])->bool:
+    if case.get("review_status")!="verified" or case.get("independent_human_review") is not True:return False
+    reviewer=str(case.get("reviewer_id") or "").strip();review_hash=str(case.get("review_case_hash") or "").strip().lower()
+    reviewer_note=str(case.get("reviewer_note") or "").strip()
+    if not reviewer or not reviewer_note or not _HEX64.fullmatch(review_hash):return False
+    return review_hash==review_case_fingerprint(case)
 
 
 def validate_case(case:dict[str,Any],*,line_no:int|None=None)->list[str]:
@@ -122,26 +132,19 @@ def validate_jsonl(path:str|Path)->DatasetValidation:
         if case.get("review_status") in {"human_required","machine_prepared","verified"}:report.review_ready_cases+=1
         if case.get("review_status")=="verified":
             report.verified_cases+=1
-            if _auditable_verified_case(case):
+            if is_auditable_verified_case(case):
                 report.auditable_verified_cases+=1;verified_categories[category]+=1
-            else:
-                report.review_audit_failures.append(case_id)
-    report.duplicate_ids=sorted(duplicates)
-    report.review_audit_failures=sorted(x for x in report.review_audit_failures if x)
-    report.category_counts={c:categories.get(c,0) for c in REQUIRED_CATEGORIES}
-    report.verified_category_counts={c:verified_categories.get(c,0) for c in REQUIRED_CATEGORIES}
+            else:report.review_audit_failures.append(case_id)
+    report.duplicate_ids=sorted(duplicates);report.review_audit_failures=sorted(x for x in report.review_audit_failures if x)
+    report.category_counts={c:categories.get(c,0) for c in REQUIRED_CATEGORIES};report.verified_category_counts={c:verified_categories.get(c,0) for c in REQUIRED_CATEGORIES}
     return report
 
 
 def promote_verified(case:dict[str,Any],*,expected_verdict:str,reviewed_at:str,reviewer_note:str,acceptable_verdicts:list[str]|None=None)->dict[str,Any]:
-    """Promote only when the caller supplies metadata from a real human review.
-
-    This low-level helper keeps backward compatibility. Production eligibility additionally
-    requires reviewer_id + review_case_hash, which the political_core.review workflow records.
-    """
+    """Low-level structural promotion. Use political_core.review for auditable production review."""
     if expected_verdict not in _VALID_VERDICTS:raise ValueError("expected_verdict is invalid")
     if not reviewed_at or not reviewer_note.strip():raise ValueError("reviewed_at and reviewer_note are required")
-    out=dict(case);out.update({"review_status":"verified","expected_verdict":expected_verdict,"acceptable_verdicts":list(acceptable_verdicts or [expected_verdict]),"independent_human_review":True,"reviewed_at":reviewed_at,"ground_truth_notes":reviewer_note})
+    out=dict(case);out.update({"review_status":"verified","expected_verdict":expected_verdict,"acceptable_verdicts":list(acceptable_verdicts or [expected_verdict]),"independent_human_review":True,"reviewed_at":reviewed_at,"reviewer_note":reviewer_note})
     errors=validate_case(out)
     if errors:raise ValueError("invalid promoted case: "+",".join(errors))
     return out

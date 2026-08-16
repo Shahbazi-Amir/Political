@@ -19,6 +19,7 @@ class Verdict(StrEnum):
     OUTDATED = "outdated"
     OPINION_NOT_FACT = "opinion_not_fact"
     PREDICTION = "prediction"
+    VERIFICATION_UNAVAILABLE = "verification_unavailable"
 
 
 class Intent(StrEnum):
@@ -97,6 +98,46 @@ class EvidenceStance(StrEnum):
     UNCLEAR = "unclear"
 
 
+class RequirementType(StrEnum):
+    PRIMARY_DOCUMENT = "primary_document"
+    OFFICIAL_MEMBERSHIP_RECORD = "official_membership_record"
+    LAW_TEXT = "law_text"
+    CONSTITUTIONAL_TEXT = "constitutional_text"
+    ORIGINAL_TRANSCRIPT = "original_transcript"
+    INDEPENDENT_CORROBORATION = "independent_corroboration"
+    BROAD_ARCHIVE_SEARCH = "broad_archive_search"
+    ABSENCE_LIMITATIONS = "absence_limitations"
+    RECENT_AUTHORITATIVE_RECORD = "recent_authoritative_record"
+    REPLACEMENT_SEARCH = "replacement_search"
+
+
+class ContradictionType(StrEnum):
+    DIRECT_FACT_CONFLICT = "direct_fact_conflict"
+    DATE_CONFLICT = "date_conflict"
+    ROLE_CONFLICT = "role_conflict"
+    SCOPE_CONFLICT = "scope_conflict"
+    SOURCE_CLAIM_VS_FACT = "source_claim_vs_fact"
+    SEMANTIC_ONLY = "semantic_only"
+    NOT_A_REAL_CONFLICT = "not_a_real_conflict"
+
+
+class QuoteMatchStatus(StrEnum):
+    EXACT_MATCH = "exact_match"
+    NORMALIZED_MATCH = "normalized_match"
+    PARTIAL_MATCH = "partial_match"
+    PARAPHRASE_ONLY = "paraphrase_only"
+    NOT_FOUND = "not_found"
+
+
+class DocumentState(StrEnum):
+    ACTIVE = "active"
+    CORRECTED = "corrected"
+    RETRACTED = "retracted"
+    DELETED = "deleted"
+    SUPERSEDED = "superseded"
+    UNKNOWN = "unknown"
+
+
 @dataclass(slots=True, frozen=True)
 class Budget:
     max_queries: int
@@ -121,6 +162,7 @@ class SearchQuery:
     text: str
     purpose: str = "neutral"
     claim_id: str | None = None
+    priority: int = 50
 
 
 @dataclass(slots=True)
@@ -133,6 +175,40 @@ class SearchResult:
     publisher: str | None = None
     cited_source: str | None = None
     source_kind: SourceKind = SourceKind.UNKNOWN
+    issuer_hint: str | None = None
+    document_type_hint: str | None = None
+    retrieval_purposes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class EntityRef:
+    entity_id: str
+    canonical_name: str
+    surface: str
+    entity_type: str = "unknown"
+    aliases: list[str] = field(default_factory=list)
+    confidence: float = 0.5
+
+
+@dataclass(slots=True)
+class DateInfo:
+    raw_text: str
+    parsed_datetime: str | None
+    calendar: str = "unknown"
+    precision: str = "day"
+    source: str = "claim"
+    confidence: float = 0.0
+
+
+@dataclass(slots=True)
+class EvidenceRequirement:
+    requirement_type: RequirementType
+    claim_id: str
+    mandatory: bool = False
+    preferred: bool = True
+    satisfied: bool = False
+    evidence_ids: list[str] = field(default_factory=list)
+    notes: str = ""
 
 
 @dataclass(slots=True)
@@ -144,14 +220,31 @@ class Claim:
     claim_type: ClaimType = ClaimType.UNKNOWN
     intent: Intent = Intent.FACT_CHECK
     entities: list[str] = field(default_factory=list)
+    entity_refs: list[EntityRef] = field(default_factory=list)
     dates: list[str] = field(default_factory=list)
+    date_info: list[DateInfo] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
     required_evidence: list[str] = field(default_factory=list)
+    evidence_requirements: list[EvidenceRequirement] = field(default_factory=list)
     is_negative: bool = False
     high_impact: bool = False
     current_status: bool = False
     breaking_news: bool = False
     quoted_texts: list[str] = field(default_factory=list)
+    reference_date: str | None = None
+
+
+@dataclass(slots=True)
+class PrimarySourceAssessment:
+    is_primary: bool = False
+    confidence: float = 0.0
+    issuer: str | None = None
+    publisher: str | None = None
+    document_type: str | None = None
+    authority_match: bool = False
+    originality_signals: list[str] = field(default_factory=list)
+    warning_signals: list[str] = field(default_factory=list)
+    reason: str = ""
 
 
 @dataclass(slots=True)
@@ -173,10 +266,17 @@ class Evidence:
     source_role: SourceRole = SourceRole.UNKNOWN
     relevance_score: float = 0.0
     source_chain_id: str = ""
+    source_chain_confidence: float = 0.0
+    source_chain_reason: str = ""
     cited_source: str | None = None
     stance: EvidenceStance = EvidenceStance.UNCLEAR
     correction_status: str | None = None
     retraction_status: str | None = None
+    document_state: DocumentState = DocumentState.UNKNOWN
+    primary_assessment: PrimarySourceAssessment = field(default_factory=PrimarySourceAssessment)
+    proves_statement_made: bool = False
+    supports_underlying_fact: bool = False
+    retrieval_purposes: list[str] = field(default_factory=list)
 
     def to_prompt_dict(self) -> dict[str, Any]:
         return {
@@ -192,9 +292,51 @@ class Evidence:
             "quality_score": round(self.quality_score, 3),
             "relevance_score": round(self.relevance_score, 3),
             "source_chain_id": self.source_chain_id,
+            "source_chain_confidence": round(self.source_chain_confidence, 3),
             "independence_key": self.independence_key,
+            "primary_assessment": asdict(self.primary_assessment),
+            "proves_statement_made": self.proves_statement_made,
+            "supports_underlying_fact": self.supports_underlying_fact,
+            "document_state": self.document_state.value,
+            "retrieval_purposes": self.retrieval_purposes,
             "excerpt": self.excerpt,
         }
+
+
+@dataclass(slots=True)
+class ClaimResearchCoverage:
+    claim_id: str
+    planned_purposes: list[str] = field(default_factory=list)
+    executed_purposes: list[str] = field(default_factory=list)
+    successful_purposes: list[str] = field(default_factory=list)
+    primary_search_attempted: bool = False
+    challenge_search_attempted: bool = False
+    archive_search_attempted: bool = False
+    replacement_search_attempted: bool = False
+    coverage_score: float = 0.0
+    query_count: int = 0
+    search_errors: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class Contradiction:
+    claim_id: str
+    evidence_a: str
+    evidence_b: str
+    contradiction_type: ContradictionType = ContradictionType.DIRECT_FACT_CONFLICT
+    severity: float = 0.5
+    resolved: bool = False
+    resolution: str = ""
+
+
+@dataclass(slots=True)
+class QuoteVerification:
+    claim_id: str
+    quote: str
+    status: QuoteMatchStatus
+    evidence_ids: list[str] = field(default_factory=list)
+    original_source_found: bool = False
+    confidence: float = 0.0
 
 
 @dataclass(slots=True)
@@ -202,8 +344,12 @@ class TimelineEvent:
     entity: str
     role: str
     event_type: str
+    entity_id: str | None = None
+    institution: str | None = None
     start_date: str | None = None
     end_date: str | None = None
+    effective_date: str | None = None
+    publication_date: str | None = None
     evidence_ids: list[str] = field(default_factory=list)
     confidence: float = 0.0
 
@@ -220,6 +366,7 @@ class ReasoningDecision:
     conflict_resolution: str = ""
     evidence_stances: dict[str, EvidenceStance] = field(default_factory=dict)
     missing_evidence: list[str] = field(default_factory=list)
+    contradictions: list[Contradiction] = field(default_factory=list)
     usage: dict[str, int | float] = field(default_factory=dict)
 
 
@@ -240,22 +387,21 @@ class FactCheckResult:
     contradicting_evidence_ids: list[str] = field(default_factory=list)
     missing_evidence: list[str] = field(default_factory=list)
     timeline: list[TimelineEvent] = field(default_factory=list)
+    coverage: list[ClaimResearchCoverage] = field(default_factory=list)
+    contradictions: list[Contradiction] = field(default_factory=list)
+    quote_verifications: list[QuoteVerification] = field(default_factory=list)
     from_cache: bool = False
     diagnostics: dict[str, Any] = field(default_factory=dict)
     cost_stats: dict[str, Any] = field(default_factory=dict)
     analysis: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["verdict"] = self.verdict.value
-        for item in data.get("evidence", []):
-            for key in ("source_kind", "source_role", "stance"):
-                value = item.get(key)
-                if isinstance(value, StrEnum):
-                    item[key] = value.value
-        for item in data.get("atomic_claims", []):
-            for key in ("claim_type", "intent"):
-                value = item.get(key)
-                if isinstance(value, StrEnum):
-                    item[key] = value.value
-        return data
+        def convert(value: Any) -> Any:
+            if isinstance(value, StrEnum):
+                return value.value
+            if isinstance(value, dict):
+                return {k: convert(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [convert(v) for v in value]
+            return value
+        return convert(asdict(self))

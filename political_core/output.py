@@ -1,30 +1,17 @@
 from __future__ import annotations
-
-from .models import FactCheckResult
-
-_LABELS = {
-    "true": "✅ درست", "mostly_true": "🟢 عمدتاً درست", "missing_context": "🟠 ناقص/بدون زمینه",
-    "misleading": "🟡 گمراه‌کننده", "mostly_false": "🟠 عمدتاً نادرست", "false": "❌ نادرست",
-    "unverified": "❓ تأییدنشده", "insufficient_evidence": "❓ شواهد ناکافی", "conflicting_evidence": "⚠️ شواهد متناقض",
-    "outdated": "🕒 تاریخ‌گذشته", "opinion_not_fact": "💬 نظر، نه واقعیت قابل‌سنجش", "prediction": "🔮 پیش‌بینی",
-}
-
-
-def render_persian(result: FactCheckResult) -> str:
-    lines = [f"نتیجه: {_LABELS.get(result.verdict.value, result.verdict.value)}", f"اطمینان: {round(result.confidence * 100)}٪", f"قدرت شواهد: {result.evidence_strength}", "", "اصل ماجرا:", result.summary]
-    if result.key_points:
-        lines.extend(["", "نکات کلیدی:"] + [f"- {x}" for x in result.key_points])
-    if result.contradicting_evidence_ids:
-        lines.extend(["", "شواهد مخالف:", ", ".join(result.contradicting_evidence_ids)])
-    if result.missing_evidence:
-        lines.extend(["", "چه چیزی هنوز کم است:"] + [f"- {x}" for x in result.missing_evidence[:6]])
-    if result.uncertainty:
-        lines.extend(["", "عدم قطعیت:", result.uncertainty])
-    cited = [e for e in result.evidence if e.evidence_id in result.citation_ids]
+from .models import FactCheckResult,Verdict
+_LABELS={Verdict.TRUE:"✅ درست",Verdict.MOSTLY_TRUE:"🟢 عمدتاً درست",Verdict.MISSING_CONTEXT:"🟠 ناقص/بدون زمینه",Verdict.MISLEADING:"🟡 گمراه‌کننده",Verdict.MOSTLY_FALSE:"🟠 عمدتاً نادرست",Verdict.FALSE:"❌ نادرست",Verdict.UNVERIFIED:"❓ قابل تأیید نیست",Verdict.INSUFFICIENT_EVIDENCE:"❓ شواهد ناکافی",Verdict.CONFLICTING_EVIDENCE:"⚠️ شواهد متناقض",Verdict.OUTDATED:"🕒 تاریخ‌گذشته",Verdict.OPINION_NOT_FACT:"💬 نظر، نه واقعیت",Verdict.PREDICTION:"🔮 پیش‌بینی",Verdict.VERIFICATION_UNAVAILABLE:"⚠️ بررسی در دسترس نبود"}
+def render_persian(result:FactCheckResult)->str:
+    lines=[f"نتیجه: {_LABELS.get(result.verdict,result.verdict.value)}",f"اطمینان: {round(result.confidence*100)}٪",f"قدرت شواهد: {result.evidence_strength}","","اصل ماجرا:",result.summary]
+    if result.key_points:lines+=["","نکات اصلی:"]+[f"• {x}" for x in result.key_points]
+    if result.contradicting_evidence_ids:lines+=["",f"شواهد مخالف: {', '.join(result.contradicting_evidence_ids)}"]
+    if result.missing_evidence:lines+=["","چه چیزی هنوز کم است؟"]+[f"• {x}" for x in result.missing_evidence[:8]]
+    if result.uncertainty:lines+=["","عدم قطعیت:",result.uncertainty]
+    if result.coverage:
+        low=[c for c in result.coverage if c.coverage_score<.75]
+        if low:lines+=["","پوشش تحقیق:"]+[f"• {c.claim_id}: {round(c.coverage_score*100)}٪" for c in low]
+    cited={e.evidence_id:e for e in result.evidence if e.evidence_id in result.citation_ids}
     if cited:
-        lines.extend(["", "منابع اصلی:"])
-        for e in cited:
-            lines.append(f"- {e.evidence_id}: {e.title} — {e.url}")
-    if result.diagnostics.get("deep_check_recommended"):
-        lines.extend(["", "بررسی عمیق‌تر برای این ادعا توصیه می‌شود."])
+        lines+=["","منابع:"]
+        for eid,e in cited.items():lines.append(f"{eid} — {e.title} — {e.url}")
     return "\n".join(lines)

@@ -1,17 +1,13 @@
 from __future__ import annotations
-
-from typing import Protocol, Sequence
-
-from .models import Evidence, ReasoningDecision, SearchResult
-
-
+from typing import Protocol,Sequence
+from .models import Evidence,ReasoningDecision,SearchResult
 class SearchProvider(Protocol):
-    def search(self, query: str, limit: int) -> Sequence[SearchResult]: ...
-
-
+    def search(self,query:str,limit:int)->Sequence[SearchResult]: ...
 class ReasoningProvider(Protocol):
-    def evaluate(self, claim: str, evidence: Sequence[Evidence]) -> ReasoningDecision: ...
-
-
+    def evaluate(self,claim:str,evidence:Sequence[Evidence])->ReasoningDecision: ...
+class CriticProvider(Protocol):
+    def critique(self,claim:str,evidence:Sequence[Evidence],initial:ReasoningDecision)->ReasoningDecision: ...
 class Fetcher(Protocol):
-    def fetch_text(self, url: str, max_chars: int, relevance_terms: str | None = None) -> str: ...
+    def fetch_text(self,url:str,max_chars:int,relevance_terms:str|None=None)->str: ...
+class ClaimDecomposerProvider(Protocol):
+    def decompose(self,text:str)->Sequence[str]: ...

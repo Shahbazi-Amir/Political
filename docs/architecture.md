@@ -1,29 +1,19 @@
 # Architecture
 
-## Boundaries
+`FactCheckEngine` UI-agnostic است. Telegram/Web/Desktop فقط adapter هستند.
 
-`SearchProvider`, `Fetcher`, `ReasoningProvider`, cache و output از هم جدا هستند. Engine منطق orchestration را نگه می‌دارد و provider-specific behavior داخل آن hard-code نمی‌شود.
+Core:
+- `claims.py`: intent، atomic claims، claim-aware query planning و coverage
+- `entity.py`: alias/entity normalization
+- `temporal.py`: Jalali/Gregorian/relative dates و freshness
+- `primary_source.py`: issuer/document ownership assessment
+- `source_policy.py`: evidence role/quality
+- `provenance.py`: source-chain graph و independence
+- `fetch.py`: safe retrieval
+- `quotes.py`: exact quote verification
+- `timeline.py`: entity-role events
+- `openai_reasoning.py`: Judge/Critic adapter
+- `confidence.py`: deterministic post-model guardrails
+- `evals.py`: calibration/benchmark metrics
 
-## Claim layer
-
-`claims.py` intent، atomic claims، dependencies، negative/high-impact/current/breaking flags و required evidence را deterministic استخراج می‌کند. هدف ایجاد guardrail ارزان قبل از LLM است.
-
-## Retrieval layer
-
-Query plan در Quick محدود و در Deep شامل primary/challenge/support/freshness/negative-existence می‌شود. Fetcher HTML را پاک‌سازی و passageهای مرتبط را محدود می‌کند تا token waste کم شود.
-
-## Evidence + provenance
-
-هر Evidence URL canonical، source kind/role، relevance، quality، independence key و source chain دارد. `provenance.py` با explicit cited-source و similarity بازنشرهای محتمل را گروه‌بندی می‌کند. این heuristic محافظه‌کار است و ادعای شناخت مالکیت پنهان رسانه‌ها ندارد.
-
-## Reasoning boundary
-
-Reasoning model فقط evidence bundle را می‌بیند و فقط Evidence ID cite می‌کند. URLها در اختیار application code هستند. محتوای fetched به‌عنوان untrusted data علامت‌گذاری می‌شود.
-
-## Deterministic post-validation
-
-حتی اگر مدل confidence بالا بدهد، `confidence.py` caps مستقل اعمال می‌کند: منبع ضعیف واحد، source-chain واحد، conflict، negative claim، breaking news، high-impact و stale current-status.
-
-## Cache / cost
-
-Cache key بر fingerprint نرمال‌شده + mode بنا شده است. TTL براساس temporal sensitivity تغییر می‌کند. Quick یک reasoning call دارد.
+Quick یک reasoning call دارد. Deep روی همان evidence bundle ابتدا Judge و سپس Critic دارد و disagreement محافظه‌کار reconcile می‌شود. Failure سرچ/fetch/provider در diagnostics ثبت می‌شود؛ اگر Judge در دسترس نباشد نتیجه `verification_unavailable` است، نه پاسخ حدسی.

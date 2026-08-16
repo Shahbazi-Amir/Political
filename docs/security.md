@@ -1,7 +1,5 @@
 # Security
 
-`SafeHttpFetcher` فقط HTTP(S) عمومی را می‌پذیرد، DNS و redirect target را بررسی می‌کند و private/loopback/link-local/reserved/multicast/unspecified IP را رد می‌کند. Timeout، response byte limit، redirect limit و content-type allowlist وجود دارد.
+Fetch: فقط HTTP/HTTPS، URL userinfo ممنوع، localhost/private/link-local/reserved IP ممنوع، همه IPهای DNS باید public باشند، redirect دوباره validate می‌شود، تغییر مشکوک DNS resolution رد می‌شود، MIME/size محدود و binary-like content رد می‌شود.
 
-Retrieved content همیشه untrusted data است و instruction داخل صفحه نباید روی reasoning اثر بگذارد. مدل URL تولید نمی‌کند؛ فقط Evidence ID cite می‌کند و core citation را validate می‌کند.
-
-API keys فقط از environment خوانده می‌شوند و secret نباید داخل repo، log یا fixture ذخیره شود.
+LLM: retrieved content untrusted data است، instruction داخل webpage نادیده گرفته می‌شود، model URL/citation جدید نمی‌سازد، structured output validate می‌شود، retry حداکثر یک بار و failure به safe uncertainty منجر می‌شود. Secrets فقط environment.

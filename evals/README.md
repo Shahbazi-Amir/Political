@@ -1,11 +1,5 @@
 # Evals
 
-Political ground truth باید curated و مستند باشد؛ این repo عمداً claim سیاسی ساختگی را به‌عنوان حقیقت وارد نمی‌کند.
-
-JSONL schema حداقلی برای runner:
-
-```json
-{"expected_verdict":"true","actual_verdict":"true","confidence":0.91,"citation_ids":["E1"],"available_evidence_ids":["E1","E2"]}
-```
-
-برای dataset واقعی، هر case باید provenance منبع ground-truth و تاریخ بازبینی انسانی داشته باشد.
+`cases/` برای پرونده‌های سیاسی واقعی و human-reviewed است. `fixtures/` برای smoke/synthetic plumbing است و **نباید** به‌عنوان accuracy سیاسی گزارش شود.
+Runner: `political-check --eval-jsonl path/to/cases.jsonl`.
+اگر پرونده verified کافی نباشد، خروجی عمداً اعلام می‌کند که production accuracy از نظر آماری اثبات نشده است.

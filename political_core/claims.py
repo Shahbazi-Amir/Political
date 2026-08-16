@@ -1,164 +1,237 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Protocol, Sequence
 
-from .models import Claim, ClaimType, Intent, SearchQuery
 from .analysis import extract_quoted_phrases
+from .entity import EntityAliasRegistry, extract_entities
+from .models import (
+    Claim,ClaimResearchCoverage,ClaimType,EvidenceRequirement,Intent,RequirementType,SearchQuery,
+)
+from .temporal import parse_date_text
 from .text import normalize_text, transliterate_fa
 
-_NEGATIVE = ("هیچ", "وجود ندارد", "وجود نداشته", "نبوده", "نیست", "نشده", "صادر نشده", "تکذیب شده")
-_HIGH_IMPACT = ("جنگ", "حمله", "موشک", "کشته", "مرگ", "ترور", "بازداشت", "اعدام", "کودتا", "انتخابات", "استعفا", "عزل", "انتصاب", "جرم", "اتهام")
-_CURRENT = ("امروز", "الان", "اکنون", "در حال حاضر", "فعلا", "فعلاً", "هم اکنون", "هم‌اکنون")
-_BREAKING = ("فوری", "همین الان", "دقایقی پیش", "ساعتی پیش", "تازه", "لحظاتی پیش")
+_NEGATIVE=("هیچ","وجود ندارد","وجود نداشته","نبوده","نیست","نشده","صادر نشده","تکذیب شده","پیدا نشده")
+_HIGH_IMPACT=("جنگ","حمله","موشک","کشته","مرگ","ترور","بازداشت","اعدام","کودتا","انتخابات","استعفا","عزل","انتصاب","جرم","اتهام")
+_CURRENT=("امروز","الان","اکنون","در حال حاضر","فعلا","فعلاً","هم اکنون","هم‌اکنون","فعلی")
+_BREAKING=("فوری","همین الان","دقایقی پیش","ساعتی پیش","تازه","لحظاتی پیش")
+_COMPLEX_MARKERS=("بنابراین","در نتیجه","به همین دلیل","در حالی که","اگر","مگر","از طرفی","در مقابل")
 
 
-def classify_intent(text: str) -> Intent:
-    t = normalize_text(text).casefold()
-    if any(x in t for x in ("استدلال", "مغالطه", "نتیجه گیری", "نتیجه‌گیری")):
-        return Intent.ARGUMENT_ANALYSIS
-    if any(x in t for x in ("نقل قول", "نقل‌قول", "گفته که", "این جمله را گفته")):
-        return Intent.QUOTE_CHECK
-    if any(x in t for x in ("قانون اساسی", "اصل 176", "اصل ۱۷۶")):
-        return Intent.CONSTITUTIONAL_CHECK
-    if any(x in t for x in ("قانون", "حقوقی", "مصوبه")):
-        return Intent.LEGAL_CHECK
-    if any(x in t for x in ("حکم", "منصوب", "انتصاب", "عزل", "نماینده")):
-        return Intent.APPOINTMENT_CHECK
-    if any(x in t for x in ("خط زمانی", "تایم لاین", "تایملاین", "به ترتیب", "از چه سال")):
-        return Intent.TIMELINE_REQUEST
-    if any(x in t for x in _NEGATIVE):
-        return Intent.NEGATIVE_CLAIM_CHECK
-    if any(x in t for x in _CURRENT):
-        return Intent.CURRENT_STATUS_CHECK
-    if any(x in t for x in ("شایعه", "شنیده", "میگن", "می گن")):
-        return Intent.RUMOR_CHECK
-    if any(x in t for x in ("خبر", "رسانه", "گزارش")):
-        return Intent.NEWS_CHECK
+class ClaimDecomposer(Protocol):
+    def decompose(self,text:str)->Sequence[str]: ...
+
+
+def classify_intent(text:str)->Intent:
+    t=normalize_text(text).casefold()
+    if any(x in t for x in ("استدلال","مغالطه","نتیجه گیری","نتیجه‌گیری")): return Intent.ARGUMENT_ANALYSIS
+    if any(x in t for x in ("نقل قول","نقل‌قول","گفته که","این جمله را گفته","دقیقاً گفت")): return Intent.QUOTE_CHECK
+    if any(x in t for x in ("قانون اساسی","اصل 176","اصل ۱۷۶")): return Intent.CONSTITUTIONAL_CHECK
+    if any(x in t for x in ("قانون","حقوقی","مصوبه","آیین نامه","آیین‌نامه")): return Intent.LEGAL_CHECK
+    if any(x in t for x in ("حکم","منصوب","انتصاب","عزل","نماینده","دبیر")): return Intent.APPOINTMENT_CHECK
+    if any(x in t for x in ("خط زمانی","تایم لاین","تایملاین","به ترتیب","از چه سال")): return Intent.TIMELINE_REQUEST
+    if any(x in t for x in _NEGATIVE): return Intent.NEGATIVE_CLAIM_CHECK
+    if any(x in t for x in _CURRENT): return Intent.CURRENT_STATUS_CHECK
+    if any(x in t for x in ("شایعه","شنیده","میگن","می گن")): return Intent.RUMOR_CHECK
+    if any(x in t for x in ("خبر","رسانه","گزارش")): return Intent.NEWS_CHECK
     return Intent.FACT_CHECK
 
 
-def classify_claim_type(text: str, intent: Intent | None = None) -> ClaimType:
-    t = normalize_text(text).casefold()
-    intent = intent or classify_intent(t)
-    if intent == Intent.CONSTITUTIONAL_CHECK:
-        return ClaimType.CONSTITUTIONAL
-    if intent == Intent.LEGAL_CHECK:
-        return ClaimType.LEGAL
-    if intent == Intent.TIMELINE_REQUEST:
-        return ClaimType.TIMELINE
-    if intent == Intent.QUOTE_CHECK:
-        return ClaimType.QUOTE
-    if any(x in t for x in ("منصوب", "انتصاب", "حکم", "عزل", "دبیر")):
-        return ClaimType.APPOINTMENT
-    if intent == Intent.NEGATIVE_CLAIM_CHECK:
-        return ClaimType.NEGATIVE
-    if any(x in t for x in ("عضو", "عضویت", "نماینده")):
-        return ClaimType.MEMBERSHIP
-    if any(x in t for x in _CURRENT):
-        return ClaimType.CURRENT_STATUS
-    if any(x in t for x in ("چون", "به دلیل", "باعث", "سبب")):
-        return ClaimType.CAUSAL
-    if any(x in t for x in ("خواهد", "پیش بینی", "پیش‌بینی", "احتمالا", "احتمالاً")):
-        return ClaimType.PREDICTION
+def classify_claim_type(text:str,intent:Intent|None=None)->ClaimType:
+    t=normalize_text(text).casefold(); intent=intent or classify_intent(t)
+    if intent==Intent.CONSTITUTIONAL_CHECK:return ClaimType.CONSTITUTIONAL
+    if intent==Intent.LEGAL_CHECK:return ClaimType.LEGAL
+    if intent==Intent.TIMELINE_REQUEST:return ClaimType.TIMELINE
+    if intent==Intent.QUOTE_CHECK or extract_quoted_phrases(t):return ClaimType.QUOTE
+    if any(x in t for x in ("منصوب","انتصاب","حکم","عزل","دبیر")):return ClaimType.APPOINTMENT
+    if any(x in t for x in ("عضو","عضویت","نماینده")):return ClaimType.MEMBERSHIP
+    if any(x in t for x in _CURRENT):return ClaimType.CURRENT_STATUS
+    if any(x in t for x in ("چون","به دلیل","باعث","سبب")):return ClaimType.CAUSAL
+    if any(x in t for x in ("خواهد","پیش بینی","پیش‌بینی","احتمالا","احتمالاً")):return ClaimType.PREDICTION
+    if intent==Intent.NEGATIVE_CLAIM_CHECK:return ClaimType.NEGATIVE
     return ClaimType.EVENT
 
 
-def _required_evidence(claim_type: ClaimType) -> list[str]:
-    mapping = {
-        ClaimType.APPOINTMENT: ["appointment_or_replacement_document", "official_membership_record"],
-        ClaimType.MEMBERSHIP: ["official_membership_record", "appointment_or_replacement_document"],
-        ClaimType.CONSTITUTIONAL: ["constitutional_text"],
-        ClaimType.LEGAL: ["law_or_primary_legal_text"],
-        ClaimType.QUOTE: ["original_transcript_audio_video"],
-        ClaimType.CURRENT_STATUS: ["recent_primary_or_authoritative_record"],
-        ClaimType.NEGATIVE: ["broad_archive_search", "absence_limitations"],
-        ClaimType.TIMELINE: ["dated_primary_or_authoritative_records"],
-    }
-    return mapping.get(claim_type, ["independent_corroboration"])
+def complexity_score(text:str)->int:
+    t=normalize_text(text)
+    score=0
+    score+=min(4,len(t)//140)
+    score+=sum(1 for x in _COMPLEX_MARKERS if x in t)
+    score+=min(3,len(re.findall(r"[؛;\n]",t)))
+    score+=2 if len(extract_quoted_phrases(t))>0 and len(t)>120 else 0
+    return score
 
 
-def _split_atomic(text: str) -> list[str]:
-    text = normalize_text(text).strip(" ؟?!.")
-    parts = [p.strip() for p in re.split(r"[؛;\n]+|\s+(?:و\s+به\s+همین\s+دلیل|بنابراین|در نتیجه|اما|ولی)\s+", text) if p.strip()]
-    if len(parts) == 1 and len(text) > 180:
-        parts = [p.strip() for p in re.split(r"\s+و\s+(?=(?:چون|اینکه|آیا|بعد|همچنین|اگر|نماینده|دبیر|عضو))", text) if p.strip()]
+def _split_atomic(text:str)->list[str]:
+    text=normalize_text(text).strip(" ؟?!.")
+    parts=[p.strip() for p in re.split(r"[؛;\n]+|\s+(?:و\s+به\s+همین\s+دلیل|بنابراین|در نتیجه|اما|ولی)\s+",text) if p.strip()]
+    if len(parts)==1 and len(text)>160:
+        parts=[p.strip() for p in re.split(r"\s+و\s+(?=(?:چون|اینکه|آیا|بعد|همچنین|اگر|نماینده|دبیر|عضو|حق|حکم))",text) if p.strip()]
     return parts[:8] or [text]
 
 
-def _dates(text: str) -> list[str]:
-    return re.findall(r"\b(?:13|14|19|20)\d{2}(?:[/-]\d{1,2}(?:[/-]\d{1,2})?)?\b", normalize_text(text))
+def _requirements(ctype:ClaimType,claim_id:str,negative:bool,current:bool)->list[EvidenceRequirement]:
+    req=[]
+    def add(rt,mandatory=False,preferred=True):
+        req.append(EvidenceRequirement(rt,claim_id,mandatory,preferred))
+    if ctype==ClaimType.APPOINTMENT:
+        add(RequirementType.PRIMARY_DOCUMENT,True); add(RequirementType.OFFICIAL_MEMBERSHIP_RECORD,False)
+    elif ctype==ClaimType.MEMBERSHIP:
+        add(RequirementType.OFFICIAL_MEMBERSHIP_RECORD,True); add(RequirementType.PRIMARY_DOCUMENT,False)
+    elif ctype==ClaimType.CONSTITUTIONAL:
+        add(RequirementType.CONSTITUTIONAL_TEXT,True)
+    elif ctype==ClaimType.LEGAL:
+        add(RequirementType.LAW_TEXT,True)
+    elif ctype==ClaimType.QUOTE:
+        add(RequirementType.ORIGINAL_TRANSCRIPT,True)
+    else:
+        add(RequirementType.INDEPENDENT_CORROBORATION,False)
+    if current:
+        add(RequirementType.RECENT_AUTHORITATIVE_RECORD,True)
+        add(RequirementType.REPLACEMENT_SEARCH,False)
+    if negative:
+        add(RequirementType.BROAD_ARCHIVE_SEARCH,True)
+        add(RequirementType.ABSENCE_LIMITATIONS,True)
+    return req
 
 
-def _entities(text: str) -> list[str]:
-    out = re.findall(r"[«\"]([^»\"]{2,80})[»\"]", text)
-    for m in re.finditer(r"(?:آقای|خانم|دکتر|سردار|آیت الله|آیت‌الله)\s+([\u0600-\u06ff]+(?:\s+[\u0600-\u06ff]+){0,3})", text):
-        out.append(m.group(1))
-    return list(dict.fromkeys(x.strip() for x in out if x.strip()))[:12]
-
-
-def analyze_claims(text: str) -> list[Claim]:
-    normalized = normalize_text(text)
-    intent = classify_intent(normalized)
-    parts = _split_atomic(normalized)
-    claims: list[Claim] = []
-    for idx, part in enumerate(parts, start=1):
-        ctype = classify_claim_type(part, intent)
-        negative = any(x in part.casefold() for x in _NEGATIVE)
-        required = _required_evidence(ctype)
-        if negative:
-            required = list(dict.fromkeys(required + ["broad_archive_search", "absence_limitations"]))
-        claim = Claim(
-            claim_id=f"C{idx}", original_text=text, normalized_text=normalized, atomic_text=part,
-            claim_type=ctype, intent=intent, entities=_entities(part), dates=_dates(part), required_evidence=required,
-            is_negative=negative, high_impact=any(x in part.casefold() for x in _HIGH_IMPACT),
-            current_status=any(x in part.casefold() for x in _CURRENT) or ctype == ClaimType.CURRENT_STATUS,
-            breaking_news=any(x in part.casefold() for x in _BREAKING), quoted_texts=extract_quoted_phrases(part),
+def analyze_claims(
+    text:str,
+    *,
+    reference_date:datetime|None=None,
+    registry:EntityAliasRegistry|None=None,
+    decomposer:ClaimDecomposer|None=None,
+    allow_model_decomposition:bool=False,
+)->list[Claim]:
+    normalized=normalize_text(text)
+    intent=classify_intent(normalized)
+    if allow_model_decomposition and decomposer and complexity_score(normalized)>=4:
+        try:
+            parts=[normalize_text(x) for x in decomposer.decompose(normalized) if normalize_text(x)][:8]
+        except Exception:
+            parts=_split_atomic(normalized)
+    else:
+        parts=_split_atomic(normalized)
+    ref=reference_date or datetime.now(timezone.utc)
+    claims=[]
+    registry=registry or EntityAliasRegistry()
+    for idx,part in enumerate(parts,1):
+        ctype=classify_claim_type(part,intent)
+        negative=any(x in part.casefold() for x in _NEGATIVE)
+        current=any(x in part.casefold() for x in _CURRENT) or ctype==ClaimType.CURRENT_STATUS
+        refs=extract_entities(part,registry)
+        dinfo=parse_date_text(part,ref)
+        req=_requirements(ctype,f"C{idx}",negative,current)
+        legacy=[x.requirement_type.value for x in req]
+        claim=Claim(
+            claim_id=f"C{idx}",original_text=text,normalized_text=normalized,atomic_text=part,
+            claim_type=ctype,intent=intent,entities=[r.canonical_name for r in refs],entity_refs=refs,
+            dates=[d.raw_text for d in dinfo],date_info=dinfo,required_evidence=legacy,evidence_requirements=req,
+            is_negative=negative,high_impact=any(x in part.casefold() for x in _HIGH_IMPACT),
+            current_status=current,breaking_news=any(x in part.casefold() for x in _BREAKING),
+            quoted_texts=extract_quoted_phrases(part),reference_date=ref.isoformat(),
         )
-        if idx > 1 and any(x in normalized for x in ("بنابراین", "در نتیجه", "به همین دلیل")):
-            claim.dependencies = [c.claim_id for c in claims]
+        if idx>1 and any(x in normalized for x in ("بنابراین","در نتیجه","به همین دلیل")):
+            claim.dependencies=[c.claim_id for c in claims]
         claims.append(claim)
     return claims
 
 
-def plan_queries(claims: list[Claim], limit: int) -> list[SearchQuery]:
-    mandatory: list[SearchQuery] = []
-    optional: list[SearchQuery] = []
-    for claim in claims:
-        q = claim.atomic_text[:300]
-        mandatory.append(SearchQuery(q, "neutral", claim.claim_id))
-        if claim.claim_type in {ClaimType.APPOINTMENT, ClaimType.MEMBERSHIP}:
-            mandatory.append(SearchQuery(f'{q[:220]} "متن حکم" OR "حکم انتصاب"', "primary", claim.claim_id))
-        elif claim.claim_type in {ClaimType.LEGAL, ClaimType.CONSTITUTIONAL}:
-            mandatory.append(SearchQuery(f'{q[:220]} "متن قانون" OR "اصل"', "primary", claim.claim_id))
-        elif claim.claim_type == ClaimType.QUOTE:
-            mandatory.append(SearchQuery(f'{q[:220]} "متن کامل" OR "ویدئو"', "primary", claim.claim_id))
-        else:
-            mandatory.append(SearchQuery(f'{q[:240]} "منبع رسمی"', "primary", claim.claim_id))
+def _query_candidates(claim:Claim,registry:EntityAliasRegistry)->list[SearchQuery]:
+    q=claim.atomic_text[:290]
+    items=[]
+    def add(text,purpose,priority):
+        items.append(SearchQuery(text[:350],purpose,claim.claim_id,priority))
 
-        if limit > 2 and claim.entities:
-            latin = transliterate_fa(" ".join(claim.entities))
-            if latin and latin.casefold() != " ".join(claim.entities).casefold():
-                optional.append(SearchQuery(f'{latin} {q[:180]}', "transliteration", claim.claim_id))
-        if limit > 2:
-            optional.append(SearchQuery(f'{q[:250]} تکذیب OR نادرست OR خلاف', "challenge", claim.claim_id))
-            optional.append(SearchQuery(f'{q[:250]} تایید OR تأیید OR سند', "support", claim.claim_id))
-            if claim.current_status:
-                optional.append(SearchQuery(f'{q[:230]} جدیدترین OR امروز OR اکنون', "freshness", claim.claim_id))
-            if claim.is_negative:
-                optional.append(SearchQuery(f'{q[:220]} آرشیو OR حکم OR سند', "negative_existence", claim.claim_id))
+    if claim.is_negative:
+        add(f'{q[:220]} حکم OR سند OR آرشیو OR انتصاب', "negative_existence", 5)
+    elif claim.claim_type in {ClaimType.APPOINTMENT,ClaimType.MEMBERSHIP}:
+        add(f'{q[:220]} "حکم انتصاب" OR "متن حکم" OR "اعضای"', "primary", 5)
+    elif claim.claim_type in {ClaimType.LEGAL,ClaimType.CONSTITUTIONAL}:
+        add(f'{q[:220]} "متن قانون" OR "قانون اساسی" OR "اصل"', "primary", 5)
+    elif claim.claim_type==ClaimType.QUOTE:
+        add(f'{q[:220]} "متن کامل" OR "ویدئو" OR "رونوشت"', "primary", 5)
+    elif claim.current_status:
+        add(f'{q[:220]} جدیدترین OR اکنون OR فعلی', "freshness", 5)
+    else:
+        add(q,"neutral",10)
 
-    ordered: list[SearchQuery] = []
-    for purpose in ("neutral", "primary"):
-        ordered.extend(q for q in mandatory if q.purpose == purpose)
-    ordered.extend(optional)
+    add(q,"neutral",20)
+    if claim.current_status or claim.claim_type in {ClaimType.APPOINTMENT,ClaimType.MEMBERSHIP}:
+        add(f'{q[:220]} جایگزین OR عزل OR استعفا OR تمدید', "replacement", 25)
+    add(f'{q[:230]} تکذیب OR نادرست OR خلاف', "challenge", 30)
+    add(f'{q[:230]} تایید OR تأیید OR سند', "support", 40)
+    if claim.is_negative:
+        add(f'{q[:220]} آرشیو OR فهرست اعضا OR سوابق', "archive", 15)
 
-    out: list[SearchQuery] = []
-    seen: set[str] = set()
-    for item in ordered:
-        key = normalize_text(item.text).casefold()
-        if key and key not in seen:
-            seen.add(key)
-            out.append(item)
-        if len(out) >= limit:
-            break
+    variants=[]
+    for ref in claim.entity_refs[:3]:
+        variants.extend(registry.variants(ref.canonical_name))
+    latin=[v for v in variants if any("a"<=c.lower()<="z" for c in v)]
+    if latin:
+        add(f'{" ".join(latin[:2])} {q[:170]}',"transliteration",45)
+    return items
+
+
+def plan_queries(claims:list[Claim],limit:int,registry:EntityAliasRegistry|None=None)->list[SearchQuery]:
+    registry=registry or EntityAliasRegistry()
+    if limit<=0:return []
+    per={c.claim_id:_query_candidates(c,registry) for c in claims}
+    selected=[]
+    seen=set()
+
+    for claim in sorted(claims,key=lambda c:(not (c.high_impact or c.is_negative or c.current_status or c.claim_type in {
+        ClaimType.APPOINTMENT,ClaimType.MEMBERSHIP,ClaimType.LEGAL,ClaimType.CONSTITUTIONAL,ClaimType.QUOTE}),c.claim_id)):
+        if not per[claim.claim_id]: continue
+        item=min(per[claim.claim_id],key=lambda x:x.priority)
+        key=normalize_text(item.text).casefold()
+        if key not in seen:
+            selected.append(item);seen.add(key)
+        if len(selected)>=limit:return selected
+
+    remaining=[]
+    for items in per.values():
+        remaining.extend(items)
+    for item in sorted(remaining,key=lambda x:(x.priority,x.claim_id or "")):
+        key=normalize_text(item.text).casefold()
+        if key in seen:continue
+        selected.append(item);seen.add(key)
+        if len(selected)>=limit:break
+    return selected
+
+
+def coverage_template(claims:Sequence[Claim],planned:Sequence[SearchQuery])->list[ClaimResearchCoverage]:
+    by=defaultdict(list)
+    for q in planned:
+        if q.claim_id:by[q.claim_id].append(q.purpose)
+    out=[]
+    for c in claims:
+        purposes=by[c.claim_id]
+        out.append(ClaimResearchCoverage(
+            claim_id=c.claim_id,planned_purposes=list(purposes),
+            primary_search_attempted=any(p=="primary" for p in purposes),
+            challenge_search_attempted="challenge" in purposes,
+            archive_search_attempted=any(p in {"archive","negative_existence"} for p in purposes),
+            replacement_search_attempted="replacement" in purposes,
+            query_count=len(purposes),
+        ))
     return out
+
+
+def finalize_coverage(coverage:list[ClaimResearchCoverage],claims:Sequence[Claim])->list[ClaimResearchCoverage]:
+    cmap={c.claim_id:c for c in claims}
+    for cov in coverage:
+        c=cmap[cov.claim_id]
+        desired={"neutral"}
+        if c.claim_type in {ClaimType.APPOINTMENT,ClaimType.MEMBERSHIP,ClaimType.LEGAL,ClaimType.CONSTITUTIONAL,ClaimType.QUOTE}:
+            desired.add("primary")
+        if c.is_negative:desired.add("negative_existence")
+        if c.current_status:desired.add("replacement")
+        if c.high_impact:desired.add("challenge")
+        have=set(cov.successful_purposes)
+        if "negative_existence" in desired and "archive" in have: have.add("negative_existence")
+        if "primary" in desired and any(p in have for p in {"negative_existence","freshness"}): have.add("primary")
+        cov.coverage_score=round(len(desired&have)/max(1,len(desired)),3)
+    return coverage

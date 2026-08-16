@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "political-core"
-version = "0.3.0"
+version = "0.5.0"
 description = "Evidence-first political fact-checking core with calibrated confidence, provenance, and low-cost verification"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,7 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 political-check = "political_core.cli:main"
+political-dataset = "political_core.dataset:main"
 
 [tool.setuptools.packages.find]
 include = ["political_core*"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -12,7 +13,23 @@ _DOC_TEXT_HINTS = (
     "رأی دادگاه", "رای دادگاه", "فرمان", "decree", "regulation", "judgment", "constitution", "official gazette",
 )
 _STATEMENT_HINTS = ("بیانیه", "اطلاعیه", "press release", "statement", "سخنگو", "اعلام کرد")
-_REPRO_HINTS = ("به نقل از", "به گزارش", "according to", "reported by", "خبرگزاری")
+_REPRO_HINTS = ("به نقل از", "به گزارش", "according to", "reported by", "خبرگزاری", "بازنشر")
+_NEWS_PATH_HINTS = ("/news/", "/اخبار/", "/press/", "/media/")
+
+
+def _issuer_key(value:str|None)->str:
+    text=normalize_text(value or "").casefold()
+    text=re.sub(r"\b(the|office|ministry|organization|agency)\b"," ",text)
+    text=re.sub(r"[^\w\u0600-\u06ff]+"," ",text)
+    return " ".join(text.split())
+
+
+def _issuer_compatible(hint:str|None,authority:str|None,domain:str)->bool:
+    if not hint or not authority:return True
+    if authority.casefold().strip(".")==domain.casefold().strip("."):return True
+    a,b=_issuer_key(hint),_issuer_key(authority)
+    if not a or not b:return True
+    return a==b or a in b or b in a
 
 
 @dataclass(slots=True)
@@ -30,8 +47,6 @@ class AuthorityRegistry:
         d = domain.lower().strip(".")
         if d in self.domains:
             return self.domains[d]
-        # Registered authorities also own their subdomains. Match the longest
-        # suffix first so a specific registry entry wins over a parent domain.
         for registered in sorted(self.domains, key=len, reverse=True):
             if d.endswith("." + registered):
                 return self.domains[registered]
@@ -57,39 +72,43 @@ class PrimarySourceAssessor:
         doc_text = any(h.casefold() in text for h in _DOC_TEXT_HINTS)
         statement = any(h.casefold() in text for h in _STATEMENT_HINTS)
         reproduction = any(h.casefold() in text for h in _REPRO_HINTS)
+        newsroom_path = any(h in path for h in _NEWS_PATH_HINTS)
         provider_primary = result.source_kind == SourceKind.PRIMARY_DOCUMENT
+        issuer_match = _issuer_compatible(result.issuer_hint, authority, domain)
 
         signals: list[str] = []
         warnings: list[str] = []
-        if authority:
-            signals.append("issuer_authority_domain")
-        if doc_path:
-            signals.append("document_path")
-        if doc_text:
-            signals.append("document_content")
-        if provider_primary:
-            signals.append("provider_primary_hint")
-        if result.document_type_hint:
-            signals.append("document_type_hint")
-        if result.issuer_hint:
-            signals.append("issuer_hint")
-        if reproduction:
-            warnings.append("reproduction_language")
-        if statement and not doc_text:
-            warnings.append("statement_not_document")
-        if not authority:
-            warnings.append("issuer_authority_unverified")
+        if authority: signals.append("issuer_authority_domain")
+        if doc_path: signals.append("document_path")
+        if doc_text: signals.append("document_content")
+        if provider_primary: signals.append("provider_primary_hint")
+        if result.document_type_hint: signals.append("document_type_hint")
+        if result.issuer_hint: signals.append("issuer_hint")
+        if issuer_match and result.issuer_hint: signals.append("issuer_hint_matches_registry")
+        if reproduction: warnings.append("reproduction_language")
+        if reproduction and doc_text: warnings.append("possible_document_mirror")
+        if statement and not doc_text: warnings.append("statement_not_document")
+        if newsroom_path: warnings.append("newsroom_path")
+        if not authority: warnings.append("issuer_authority_unverified")
+        if authority and not issuer_match: warnings.append("issuer_hint_mismatch")
 
         authority_match = bool(authority)
         document_signal = doc_text or bool(result.document_type_hint)
-        # A URL/title hint alone is never enough. We need both a recognized
-        # issuer relationship and evidence that the page is actually the document.
-        is_primary = authority_match and document_signal and not (reproduction and not doc_text)
+        is_primary = bool(
+            authority_match
+            and issuer_match
+            and document_signal
+            and not reproduction
+            and not (statement and not doc_text)
+        )
         if is_primary:
-            confidence = .72 + .08 * doc_path + .06 * provider_primary + .04 * bool(result.issuer_hint)
+            confidence = .74 + .07*doc_path + .05*provider_primary + .04*bool(result.issuer_hint)
+            if newsroom_path: confidence -= .04
             confidence = min(.96, confidence)
         else:
-            confidence = min(.55, .2 + .12 * doc_text + .08 * provider_primary + .1 * authority_match)
+            confidence = min(.55, .18 + .12*doc_text + .08*provider_primary + .1*authority_match)
+            if reproduction: confidence=min(confidence,.36)
+            if authority and not issuer_match: confidence=min(confidence,.28)
 
         issuer = result.issuer_hint or authority
         dtype = result.document_type_hint
@@ -99,20 +118,14 @@ class PrimarySourceAssessor:
                     dtype = hint
                     break
         reason = (
-            "authority and document signals match"
+            "authority, issuer ownership and document signals match"
             if is_primary
-            else "primary status rejected: issuer authority and document ownership were not both established"
+            else "primary status rejected: document ownership was not established conservatively"
         )
         return PrimarySourceAssessment(
-            is_primary=is_primary,
-            confidence=round(confidence, 3),
-            issuer=issuer,
-            publisher=result.publisher or domain,
-            document_type=dtype,
-            authority_match=authority_match,
-            originality_signals=signals,
-            warning_signals=warnings,
-            reason=reason,
+            is_primary=is_primary,confidence=round(max(0.0,confidence),3),issuer=issuer,
+            publisher=result.publisher or domain,document_type=dtype,authority_match=authority_match,
+            originality_signals=signals,warning_signals=warnings,reason=reason,
         )
 
     def official_statement_likely(self, result: SearchResult, excerpt: str = "") -> bool:

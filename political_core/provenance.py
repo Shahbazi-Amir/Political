@@ -23,6 +23,42 @@ def _quote_overlap(a:str,b:str)->float:
     return len(na&nb)/max(1,len(na|nb))
 
 
+def _word_sequence(text:str)->list[str]:
+    return [x for x in re.findall(r"[\w\u0600-\u06ff]+",normalize_text(text).casefold()) if len(x)>1]
+
+
+def _shingles(text:str,size:int=5)->set[tuple[str,...]]:
+    words=_word_sequence(text)
+    if len(words)<size:return set()
+    return {tuple(words[i:i+size]) for i in range(len(words)-size+1)}
+
+
+def shingle_containment(a:str,b:str,size:int=5)->float:
+    aa,bb=_shingles(a,size),_shingles(b,size)
+    if not aa or not bb:return 0.0
+    return len(aa&bb)/max(1,min(len(aa),len(bb)))
+
+
+def _paragraphs(text:str)->list[str]:
+    parts=[normalize_text(x) for x in re.split(r"\n+|(?<=[.!?؟])\s+",text) if normalize_text(x)]
+    return [x for x in parts if len(_word_sequence(x))>=10][:60]
+
+
+def paragraph_overlap(a:str,b:str)->float:
+    pa,pb=_paragraphs(a),_paragraphs(b)
+    if not pa or not pb:return 0.0
+    matched=0;used=set()
+    for left in pa:
+        best_j=None;best=0.0
+        for j,right in enumerate(pb):
+            if j in used:continue
+            sim=text_similarity(left,right)
+            if sim>best:best_j=j;best=sim
+        if best_j is not None and best>=.82:
+            used.add(best_j);matched+=1
+    return matched/max(1,min(len(pa),len(pb)))
+
+
 def _time_distance_hours(a:str|None,b:str|None)->float|None:
     if not a or not b:return None
     try:
@@ -31,9 +67,29 @@ def _time_distance_hours(a:str|None,b:str|None)->float|None:
     except Exception:return None
 
 
+def _source_key(value:str)->str:
+    value=normalize_text(value).casefold()
+    value=re.sub(r"(خبرگزاری|news\s*agency|agency|news|press|شبکه|پایگاه)"," ",value)
+    value=re.sub(r"[^\w\u0600-\u06ff]+"," ",value)
+    return "".join(value.split())
+
+
 def _source_names(e:Evidence)->set[str]:
     values={e.domain.split(".")[0],e.publisher or "",e.cited_source or ""}
-    return {normalize_text(x).casefold().replace(" ","") for x in values if x}
+    return {_source_key(x) for x in values if _source_key(x)}
+
+
+def _explicit_attributions(text:str)->set[str]:
+    patterns=(
+        r"(?:به نقل از|به گزارش)\s+([^،,:؛\n]{2,70})",
+        r"(?:according to|reported by|via)\s+([A-Za-z0-9 ._-]{2,70})",
+    )
+    out=set()
+    for pat in patterns:
+        for match in re.findall(pat,text,flags=re.I):
+            key=_source_key(match)
+            if key:out.add(key)
+    return out
 
 
 @dataclass(slots=True)
@@ -57,21 +113,32 @@ def build_source_graph(evidence:Sequence[Evidence],similarity_threshold:float=.7
     for i in range(len(evidence)):
         for j in range(i+1,len(evidence)):
             a,b=evidence[i],evidence[j]
-            ac=normalize_text(a.cited_source or "").casefold().replace(" ","")
-            bc=normalize_text(b.cited_source or "").casefold().replace(" ","")
+            ac=_source_key(a.cited_source or "");bc=_source_key(b.cited_source or "")
             if ac and bc and ac==bc:
                 graph.add(i,j,"same_explicit_source",.99,"same cited_source");continue
-            # Link a downstream attribution to the original outlet itself when possible.
-            if (ac and ac in _source_names(b)) or (bc and bc in _source_names(a)):
-                graph.add(i,j,"cites_other_source",.96,"explicit attribution matches other publisher/domain");continue
-            sim=text_similarity(f"{a.title} {a.excerpt[:1800]}",f"{b.title} {b.excerpt[:1800]}")
-            qo=_quote_overlap(a.excerpt[:2500],b.excerpt[:2500]);hours=_time_distance_hours(a.published_at,b.published_at)
+
+            a_names,b_names=_source_names(a),_source_names(b)
+            a_attr=_explicit_attributions(f"{a.title}\n{a.excerpt[:2500]}")
+            b_attr=_explicit_attributions(f"{b.title}\n{b.excerpt[:2500]}")
+            if (a_attr & b_names) or (b_attr & a_names) or (ac and ac in b_names) or (bc and bc in a_names):
+                graph.add(i,j,"cites_other_source",.97,"explicit attribution matches other publisher/domain");continue
+
+            sample_a=f"{a.title}\n{a.excerpt[:2600]}";sample_b=f"{b.title}\n{b.excerpt[:2600]}"
+            sim=text_similarity(sample_a,sample_b)
+            qo=_quote_overlap(a.excerpt[:2500],b.excerpt[:2500])
+            para=paragraph_overlap(a.excerpt[:3500],b.excerpt[:3500])
+            shingle=shingle_containment(a.excerpt[:3500],b.excerpt[:3500])
+            hours=_time_distance_hours(a.published_at,b.published_at)
+
+            if para>=.5 or shingle>=.72:
+                conf=.94 if hours is None or hours<=72 else .86
+                graph.add(i,j,"near_verbatim_reproduction",conf,f"paragraph_overlap={para:.2f},shingle_containment={shingle:.2f}");continue
             if sim>=strong_threshold:
                 conf=.92 if hours is None or hours<=48 else .82
-                graph.add(i,j,"likely_copy_or_syndication",conf,f"text_similarity={sim:.2f}")
-            elif sim>=similarity_threshold and qo>=.5:
-                graph.add(i,j,"likely_shared_source",.78,f"text_similarity={sim:.2f},quote_overlap={qo:.2f}")
-            elif qo>=.8 and hours is not None and hours<=24:
+                graph.add(i,j,"likely_copy_or_syndication",conf,f"text_similarity={sim:.2f}");continue
+            if sim>=similarity_threshold and (qo>=.5 or shingle>=.4):
+                graph.add(i,j,"likely_shared_source",.79,f"text_similarity={sim:.2f},quote_overlap={qo:.2f},shingle={shingle:.2f}");continue
+            if qo>=.8 and hours is not None and hours<=24:
                 graph.add(i,j,"likely_shared_source",.72,f"quote_overlap={qo:.2f},hours={hours:.1f}")
     return graph
 
@@ -100,7 +167,7 @@ def assign_source_chains(evidence:Sequence[Evidence],similarity_threshold:float=
                     if c:group_conf=max(group_conf,c);reasons.append(edge_reason.get((a,b),edge_reason.get((b,a),"")))
         for i in indices:
             if len(indices)>1:
-                out[i]=replace(out[i],source_chain_id=chain,source_chain_confidence=round(group_conf or .7,3),source_chain_reason="; ".join(dict.fromkeys(x for x in reasons if x))[:240])
+                out[i]=replace(out[i],source_chain_id=chain,source_chain_confidence=round(group_conf or .7,3),source_chain_reason="; ".join(dict.fromkeys(x for x in reasons if x))[:300])
             else:out[i]=replace(out[i],source_chain_id=chain,source_chain_confidence=0.0,source_chain_reason="singleton")
     return out
 
@@ -120,7 +187,6 @@ def assess_independence(evidence:Sequence[Evidence])->IndependenceAssessment:
     if not items:return IndependenceAssessment()
     groups={}
     for e in items:
-        # A high-confidence source-chain groups cross-domain copies together.
         key=("chain",e.source_chain_id) if e.source_chain_id and e.source_chain_confidence>=.7 else ("domain",e.independence_key)
         groups.setdefault(key,[]).append(e)
     certain_same=sum(max(0,len(v)-1) for v in groups.values() if any(x.source_chain_confidence>=.9 for x in v))

@@ -23,5 +23,7 @@ jobs:
         run: python -m compileall -q political_core
       - name: Unit, security and adversarial tests
         run: python -m pytest -q -m "not live"
+      - name: Validate 100-case review queue
+        run: python -m political_core.dataset evals/cases/persian_political_review_queue.jsonl.gz --require-review-queue-ready
       - name: Evaluation smoke
         run: python -m political_core.cli --eval-jsonl evals/fixtures/smoke.jsonl
